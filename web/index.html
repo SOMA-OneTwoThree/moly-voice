@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Molly · 실시간 음성 데모</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px;
+           margin: 0 auto; padding: 24px; }
+    h1 { font-size: 20px; }
+    #status { display: inline-block; padding: 4px 12px; border-radius: 999px;
+              font-size: 13px; background: #eee; color: #333; }
+    #status.listening { background: #e0f0ff; color: #0366d6; }
+    #status.thinking  { background: #fff3cd; color: #8a6d00; }
+    #status.speaking  { background: #e6ffed; color: #1a7f37; }
+    #log { margin: 20px 0; min-height: 240px; }
+    .bubble { margin: 8px 0; padding: 10px 14px; border-radius: 14px; max-width: 80%;
+              white-space: pre-wrap; line-height: 1.5; }
+    .you   { background: #0366d6; color: #fff; margin-left: auto; }
+    .molly { background: #f0f0f3; color: #111; }
+    .live  { opacity: 0.6; font-style: italic; }
+    #talk { width: 100%; padding: 18px; font-size: 18px; border: 0; border-radius: 14px;
+            background: #0366d6; color: #fff; cursor: pointer; }
+    #talk.on { background: #d62c2c; }
+    #hint { color: #888; font-size: 13px; margin-top: 10px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>🛸 Molly · 실시간 음성 데모</h1>
+  <div>상태: <span id="status">idle</span></div>
+  <div id="log"></div>
+  <button id="talk">🎤 말하기 시작</button>
+  <div id="hint">버튼을 눌러 말하고, 다시 눌러 전송하세요. 말하는 중 버튼을 누르면 끼어듭니다.</div>
+  <script src="app.js"></script>
+</body>
+</html>
