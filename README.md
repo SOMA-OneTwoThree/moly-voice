@@ -34,12 +34,21 @@ app/
 | 앱 → | 오디오 청크(PCM 바이너리), `{type:"start"}` / `{type:"stop"}` |
 | → 앱 | TTS 오디오(바이너리), `{type:"transcript",text,final}`, `{type:"turn_end"}`, `{type:"barge_in"}` |
 
-## 로컬 실행
+## 데모 실행 (push-to-talk 웹)
+두 서버가 필요: ① LLM(`/chat`) + ② 음성 게이트웨이.
 ```bash
-cp .env.example .env    # DEEPGRAM/ELEVENLABS 키, LLM_URL=localhost:8000
+# ① LLM (현재는 기존 Node 서버) — 별도 터미널
+cd ../moly-pipeline-test && npm run dev          # :3000
+
+# ② 음성 게이트웨이
+cp .env.example .env    # DEEPGRAM/ELEVENLABS 키, LLM_URL=localhost:3000/api/chat
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8001
+uvicorn app.main:app --port 8001
 ```
+→ **Chrome에서 `http://localhost:8001`** 열기 → 🎤 버튼으로 말하고, 다시 눌러 전송 → Molly 응답 재생.
+말하는 중 버튼을 누르면 끼어들기(barge-in). `localhost`는 보안 컨텍스트라 마이크 허용됨.
+
+> 검증: 브라우저 없이 시뮬 클라이언트(wav PCM 주입)로 STT→LLM→TTS E2E 확인 가능.
 
 ## env
 | 키 | 설명 |
