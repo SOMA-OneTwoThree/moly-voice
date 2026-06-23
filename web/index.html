@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Molly · 실시간 음성 데모</title>
+  <title>Moly · 실시간 음성 데모</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px;
@@ -20,6 +20,7 @@
     .you   { background: #0366d6; color: #fff; margin-left: auto; }
     .molly { background: #f0f0f3; color: #111; }
     .live  { opacity: 0.6; font-style: italic; }
+    .latency { color: #888; font-size: 12px; margin: 4px 0 12px; font-variant-numeric: tabular-nums; }
     #talk { width: 100%; padding: 18px; font-size: 18px; border: 0; border-radius: 14px;
             background: #0366d6; color: #fff; cursor: pointer; }
     #talk.on { background: #d62c2c; }
@@ -27,7 +28,7 @@
   </style>
 </head>
 <body>
-  <h1>🛸 Molly · 실시간 음성 데모</h1>
+  <h1>🛸 Moly · 실시간 음성 데모</h1>
   <div>상태: <span id="status">idle</span></div>
   <div id="log"></div>
   <button id="talk">🎤 말하기 시작</button>

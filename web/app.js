@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 let ws, inCtx, micNode, micStream, outCtx;
 let nextTime = 0, sources = [];
 let listening = false, replyBuf = "", liveYou = null;
+let tEnd = 0, tStt = 0, tReply = 0, tAudio = 0; // 지연 측정(발화종료 기준)
 
 function setStatus(s) { $("status").textContent = s; $("status").className = s; }
 
@@ -29,24 +30,46 @@ async function connect() {
 }
 
 function onMessage(ev) {
-  if (typeof ev.data !== "string") { playPCM(ev.data); return; }
+  if (typeof ev.data !== "string") {
+    if (!tAudio) tAudio = performance.now();   // 첫 응답 오디오(체감 지연 끝점)
+    playPCM(ev.data);
+    return;
+  }
   const m = JSON.parse(ev.data);
   if (m.type === "transcript") {
     if (!liveYou) liveYou = bubble("you live", "");
     liveYou.textContent = m.text;
-    if (m.final) { liveYou.classList.remove("live"); liveYou = null; }
+    if (m.final) { if (!tStt) tStt = performance.now(); liveYou.classList.remove("live"); liveYou = null; }
   } else if (m.type === "reply_delta") {
+    if (!tReply) tReply = performance.now();    // 첫 응답 텍스트
     replyBuf += m.text;
     if (!window._molly) window._molly = bubble("molly live", "");
     window._molly.textContent = replyBuf;
   } else if (m.type === "turn_end") {
     if (window._molly) window._molly.classList.remove("live");
     window._molly = null; replyBuf = "";
+    showLatency();
   } else if (m.type === "status") {
     setStatus(m.state);
   } else if (m.type === "error") {
     bubble("molly", "⚠️ " + m.message);
   }
+}
+
+// 발화종료(버튼 end) 기준 지연 분해 표시.
+function showLatency() {
+  if (!tEnd || !tAudio) return;
+  const total = Math.round(tAudio - tEnd);
+  const stt = tStt ? Math.round(tStt - tEnd) : null;        // end → 전사 확정
+  const llm = (tStt && tReply) ? Math.round(tReply - tStt) : null; // 전사 → 첫 텍스트
+  const parts = [`체감 ${total}ms`];
+  if (stt != null) parts.push(`STT ${stt}`);
+  if (llm != null) parts.push(`LLM ${llm}`);
+  const d = document.createElement("div");
+  d.className = "latency";
+  d.textContent = "⏱ " + parts.join(" · ");
+  $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
 }
 
 // ── 재생 (PCM 24k 연속 스케줄링) ──
@@ -103,6 +126,7 @@ $("talk").onclick = async () => {
       $("talk").textContent = "■ 종료 (전송)";
       $("talk").classList.add("on");
     } else {
+      tEnd = performance.now(); tStt = tReply = tAudio = 0;  // 지연 측정 시작점
       ws.send(JSON.stringify({ type: "end" }));
       stopMic();
       listening = false;
