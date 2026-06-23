@@ -18,6 +18,8 @@ ELEVENLABS_VOICE_ID = env("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_MODEL = env("ELEVENLABS_MODEL", "eleven_flash_v2_5")
 STT_LANGUAGE = env("STT_LANGUAGE", "multi")
 LLM_URL = env("LLM_URL", "http://localhost:3000/api/chat")
+# 캐시 워밍(prefetch) 엔드포인트 — /chat 와 같은 호스트의 /warm.
+WARM_URL = env("WARM_URL", LLM_URL.replace("/chat", "/warm"))
 
 # 데모 고정 user_id(인증 전). Mem0 장기기억이 이 id로 쌓인다.
 DEMO_USER_ID = env("DEMO_USER_ID", "molly_voice_demo")

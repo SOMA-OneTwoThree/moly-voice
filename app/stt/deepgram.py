@@ -24,9 +24,11 @@ class DeepgramStream:
         self._ws: websockets.WebSocketClientProtocol | None = None
 
     async def open(self) -> None:
+        # endpointing: 발화 도중 멈춤마다 부분 final을 미리 확정 → 버튼 end 때 flush가 빨라짐(속도용).
+        # 턴 경계는 여전히 버튼(end). 중간에 final이 쪼개져도 누적해서 합치므로 무방.
         qs = (
             f"model={self.model}&encoding=linear16&sample_rate={_SR}&channels=1"
-            f"&interim_results=true&smart_format=true&language={STT_LANGUAGE}"
+            f"&interim_results=true&smart_format=true&endpointing=300&language={STT_LANGUAGE}"
         )
         url = f"{_URL}?{qs}"
         hdrs = {"Authorization": f"Token {DEEPGRAM_API_KEY}"}

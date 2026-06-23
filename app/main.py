@@ -11,9 +11,11 @@ import asyncio
 import json
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 
+from .config import DEMO_USER_ID, WARM_URL
 from .gateway.orchestrator import run_turn
 from .stt.deepgram import DeepgramStream
 
@@ -25,6 +27,15 @@ _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "moly-voice"}
+
+
+async def _warm_cache() -> None:
+    """세션 연결 시 Mem0 캐시 prefetch — 첫 턴 search 미스(~0.7s) 제거. fail-safe."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            await c.post(WARM_URL, json={"user_id": DEMO_USER_ID})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def _pump_stt(dg: DeepgramStream, send_json) -> str:
@@ -43,6 +54,7 @@ async def _pump_stt(dg: DeepgramStream, send_json) -> str:
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
+    asyncio.create_task(_warm_cache())  # 연결 즉시 캐시 prefetch(non-blocking)
     send_lock = asyncio.Lock()  # 동시 send 직렬화(Starlette WS는 concurrent send 비안전)
 
     async def send_json(d: dict) -> None:
