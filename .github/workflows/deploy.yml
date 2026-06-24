@@ -1,0 +1,115 @@
+name: Build and Deploy (moly-voice)
+
+# main에 push되면: 이미지 빌드 → ECR push → SSM으로 EC2에서 deploy.sh 실행
+on:
+  push:
+    branches: [main]
+
+# OIDC로 AWS에 인증하려면 id-token: write 가 필수
+permissions:
+  id-token: write
+  contents: read
+
+# 연속 push 시 이전 실행을 취소하고 최신만 배포 (배포 레이스 방지)
+concurrency:
+  group: deploy-moly-voice
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 676972757138.dkr.ecr.ap-northeast-2.amazonaws.com
+  IMAGE_NAME: moly-voice            # ← 이 워크플로의 유일한 고유 값 (llm 레포에선 moly-llm)
+  EC2_INSTANCE_ID: i-0b2154ed899e3b85d
+  ROLE_ARN: arn:aws:iam::676972757138:role/moly-github-actions-role
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 코드 체크아웃
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. AWS OIDC 인증 (액세스 키 없음 — 역할을 그때그때 assume)
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3. ECR 로그인
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 4. Docker Buildx (gha 캐시로 빌드 가속)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 5. 이미지 빌드 & ECR push (latest + git sha 두 태그)
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 6. SSM으로 EC2에서 배포 실행 → 완료까지 폴링 → 로그 출력 → 실패 시 워크플로 실패
+      - name: Deploy on EC2 via SSM
+        run: |
+          set -euo pipefail
+
+          echo "==> SSM SendCommand 발사"
+          COMMAND_ID="$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy moly-voice ${GITHUB_SHA::7}" \
+            --parameters 'commands=["cd /root/moly-infra && git pull --ff-only && sudo ./deploy.sh"]' \
+            --query "Command.CommandId" \
+            --output text)"
+          echo "CommandId: $COMMAND_ID"
+
+          echo "==> 명령 완료 대기 (최대 약 10분)"
+          # aws ssm wait는 기본 타임아웃이 짧을 수 있어 직접 폴링한다.
+          STATUS="Pending"
+          for i in $(seq 1 60); do
+            sleep 10
+            STATUS="$(aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query "Status" \
+              --output text 2>/dev/null || echo 'Pending')"
+            echo "  [$i] status=$STATUS"
+            case "$STATUS" in
+              Success|Failed|Cancelled|TimedOut) break ;;
+            esac
+          done
+
+          echo "==> EC2 배포 표준출력 ----------------------------------------"
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query "StandardOutputContent" \
+            --output text || true
+
+          echo "==> EC2 배포 표준에러 ----------------------------------------"
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query "StandardErrorContent" \
+            --output text || true
+
+          echo "==> 최종 상태: $STATUS"
+          if [ "$STATUS" != "Success" ]; then
+            echo "배포 실패 (status=$STATUS)" >&2
+            exit 1
+          fi
+          echo "==> 배포 성공"
