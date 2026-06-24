@@ -69,7 +69,7 @@ jobs:
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy moly-voice ${GITHUB_SHA::7}" \
-            --parameters 'commands=["cd /root/moly-infra && git pull --ff-only && sudo ./deploy.sh"]' \
+            --parameters 'commands=["cd /root/moly-infra && git pull --ff-only && sudo bash deploy.sh"]' \
             --query "Command.CommandId" \
             --output text)"
           echo "CommandId: $COMMAND_ID"
