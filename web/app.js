@@ -95,6 +95,8 @@ function stopPlayback() {
 // ── 마이크 ──
 async function startMic() {
   inCtx = new AudioContext({ sampleRate: 16000 });
+  // 진단: 브라우저가 16000을 실제로 적용했는지(미지원 시 48000 등으로 잡힘 → Deepgram 포맷 불일치)
+  console.log("mic AudioContext.sampleRate =", inCtx.sampleRate);
   await inCtx.audioWorklet.addModule("mic-worklet.js");
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
@@ -121,7 +123,8 @@ $("talk").onclick = async () => {
     if (!listening) {
       stopPlayback();                          // 말하던 중이면 끊고(barge-in 로컬)
       await startMic();
-      ws.send(JSON.stringify({ type: "start" })); // 게이트웨이도 진행 턴 cancel
+      // 진단: 실제 마이크 레이트를 서버로 전달(서버가 Deepgram 16000과 비교)
+      ws.send(JSON.stringify({ type: "start", sampleRate: inCtx.sampleRate }));
       listening = true;
       $("talk").textContent = "■ 종료 (전송)";
       $("talk").classList.add("on");
