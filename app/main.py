@@ -22,6 +22,7 @@ from .gateway.orchestrator import run_turn
 from .stt.deepgram import DeepgramStream
 
 _log = logging.getLogger("moly-voice")
+_log.setLevel(logging.INFO)  # STT 진단 로그(transcript/타임아웃/연결·인증)가 기본 WARNING에 묻히지 않게
 
 app = FastAPI(title="moly-voice")
 
@@ -51,8 +52,8 @@ async def _pump_stt(dg: DeepgramStream, send_json) -> str:
                 finals.append(txt)
             else:
                 await send_json({"type": "transcript", "text": txt, "final": False})
-    except Exception as e:  # noqa: BLE001  (orphan/소켓 종료 시 ConnectionClosed 등 — 태스크 통째로 안 죽게)
-        _log.debug("stt pump ended: %s", e)
+    except Exception as e:  # noqa: BLE001  (CancelledError는 BaseException → orphan cancel은 통과)
+        _log.warning("STT pump error: %r", e)  # 연결 종료/프로토콜/인증 등 원인 타입 노출
     transcript = " ".join(finals).strip()
     if transcript:  # 빈 transcript는 클라이언트로 보내지 않음(불필요 final 이벤트/잠재 크래시점 제거)
         await send_json({"type": "transcript", "text": transcript, "final": True})
@@ -146,21 +147,36 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 await cancel_turn()  # barge-in: 진행 중 발화 중단
                 await cancel_stt()   # 직전 턴 잔여 STT 정리(중복 start 대비, None이면 no-op)
                 dg = DeepgramStream()
-                await dg.open()
+                try:
+                    await dg.open()
+                except Exception as e:  # noqa: BLE001  # 인증/DNS/연결 실패 — 명확 로그 + 통지 후 복귀
+                    _log.exception("STT open 실패(인증/연결 확인)")
+                    dg = None
+                    await send_json({"type": "error", "message": f"STT 연결 실패: {e}"[:200]})
+                    await send_json({"type": "status", "state": "idle"})
+                    continue
                 await send_json({"type": "status", "state": "listening"})
                 stt_task = asyncio.create_task(_pump_stt(dg, send_json))
 
             elif t == "end":
                 if dg and stt_task:
                     await dg.finalize()
-                    try:  # grace: 최종 transcript가 그 안에 오면 즉시 진행, 안 오면 크래시 없이 스킵
+                    try:  # grace: 최종 transcript가 그 안에 오면 즉시 진행
                         transcript = await asyncio.wait_for(
                             stt_task, timeout=STT_FINALIZE_GRACE_MS / 1000)
-                    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                    except asyncio.TimeoutError:  # 타임아웃 = 지연/네트워크
                         transcript = ""
+                        _log.warning("STT grace timeout: %dms 내 finalize 미도착(지연/네트워크 의심)",
+                                     STT_FINALIZE_GRACE_MS)
+                    except Exception:  # noqa: BLE001  # 그 외 = 연결/인증 등 — 전체 트레이스백 노출
+                        transcript = ""
+                        _log.exception("STT finalize 실패(연결/인증 등)")
                     await cancel_stt()  # 성공·타임아웃 양쪽에서 orphan 방지 + dg.close 일원화
-                    if transcript.strip():  # 빈 결과면 LLM 호출 안 함
+                    if transcript.strip():  # 정상 → 받은 값 로그 후 LLM 진행
+                        _log.info("STT transcript: %r", transcript)
                         turn_task = asyncio.create_task(safe_turn(transcript))
+                    else:  # 빈 결과 → 경고 + LLM 호출 스킵
+                        _log.warning("STT 빈 결과 — LLM 호출 스킵")
 
             elif t == "interrupt":
                 await cancel_turn()
