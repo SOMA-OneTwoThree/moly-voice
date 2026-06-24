@@ -2,10 +2,11 @@
 // 마이크 PCM16 16k → /ws → STT/LLM/TTS → PCM24k 재생.
 
 const $ = (id) => document.getElementById(id);
-let ws, inCtx, micNode, micStream, outCtx;
+let ws, inCtx, micNode, micSource, micStream, outCtx;
 let nextTime = 0, sources = [];
 let listening = false, replyBuf = "", liveYou = null;
 let tEnd = 0, tStt = 0, tReply = 0, tAudio = 0; // 지연 측정(발화종료 기준)
+let pendingListen = null;
 
 function setStatus(s) { $("status").textContent = s; $("status").className = s; }
 
@@ -51,7 +52,15 @@ function onMessage(ev) {
     showLatency();
   } else if (m.type === "status") {
     setStatus(m.state);
+    if (m.state === "listening" && pendingListen) {
+      pendingListen.resolve();
+      pendingListen = null;
+    }
   } else if (m.type === "error") {
+    if (pendingListen) {
+      pendingListen.reject(new Error(m.message));
+      pendingListen = null;
+    }
     bubble("molly", "⚠️ " + m.message);
   }
 }
@@ -93,7 +102,20 @@ function stopPlayback() {
 }
 
 // ── 마이크 ──
-async function startMic() {
+function waitForListening() {
+  if (pendingListen) pendingListen.reject(new Error("start superseded"));
+  return new Promise((resolve, reject) => {
+    const token = { resolve, reject };
+    pendingListen = token;
+    setTimeout(() => {
+      if (pendingListen !== token) return;
+      pendingListen = null;
+      reject(new Error("STT listening timeout"));
+    }, 8000);
+  });
+}
+
+async function prepareMic() {
   inCtx = new AudioContext({ sampleRate: 16000 });
   // 진단: 브라우저가 16000을 실제로 적용했는지(미지원 시 48000 등으로 잡힘 → Deepgram 포맷 불일치)
   console.log("mic AudioContext.sampleRate =", inCtx.sampleRate);
@@ -101,16 +123,19 @@ async function startMic() {
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
   });
-  const srcNode = inCtx.createMediaStreamSource(micStream);
+  micSource = inCtx.createMediaStreamSource(micStream);
   micNode = new AudioWorkletNode(inCtx, "mic-processor");
   micNode.port.onmessage = (e) => { if (ws && ws.readyState === 1) ws.send(e.data); };
-  srcNode.connect(micNode);
+}
+function startMic() {
+  if (micSource && micNode) micSource.connect(micNode);
 }
 function stopMic() {
   if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  if (micSource) micSource.disconnect();
   if (micNode) micNode.disconnect();
   if (inCtx) inCtx.close();
-  micStream = micNode = inCtx = null;
+  micStream = micNode = micSource = inCtx = null;
 }
 
 // ── 버튼(토글) ──
@@ -122,9 +147,11 @@ $("talk").onclick = async () => {
 
     if (!listening) {
       stopPlayback();                          // 말하던 중이면 끊고(barge-in 로컬)
-      await startMic();
+      await prepareMic();
       // 진단: 실제 마이크 레이트를 서버로 전달(서버가 Deepgram 16000과 비교)
       ws.send(JSON.stringify({ type: "start", sampleRate: inCtx.sampleRate }));
+      await waitForListening();
+      startMic();
       listening = true;
       $("talk").textContent = "■ 종료 (전송)";
       $("talk").classList.add("on");
@@ -138,6 +165,7 @@ $("talk").onclick = async () => {
     }
   } catch (e) {
     bubble("molly", "⚠️ " + (e.message || e));
+    stopMic();
     listening = false; $("talk").classList.remove("on");
   }
 };

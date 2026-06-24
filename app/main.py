@@ -46,15 +46,17 @@ async def _warm_cache() -> None:
 async def _pump_stt(dg: DeepgramStream, send_json) -> str:
     """Deepgram 결과를 읽어 interim은 표시, final은 누적 → 최종 transcript 반환."""
     finals: list[str] = []
+    last_interim = ""
     try:
         async for txt, is_final in dg.results():
             if is_final:
                 finals.append(txt)
             else:
+                last_interim = txt
                 await send_json({"type": "transcript", "text": txt, "final": False})
     except Exception as e:  # noqa: BLE001  (CancelledError는 BaseException → orphan cancel은 통과)
         _log.warning("STT pump error: %r", e)  # 연결 종료/프로토콜/인증 등 원인 타입 노출
-    transcript = " ".join(finals).strip()
+    transcript = " ".join(finals).strip() or last_interim.strip()
     if transcript:  # 빈 transcript는 클라이언트로 보내지 않음(불필요 final 이벤트/잠재 크래시점 제거)
         await send_json({"type": "transcript", "text": transcript, "final": True})
     return transcript
