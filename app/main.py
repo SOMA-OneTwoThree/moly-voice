@@ -1,4 +1,4 @@
-"""moly-voice — 실시간 음성 게이트웨이 (push-to-talk 데모).
+"""moly-voice — 실시간 음성 게이트웨이 (push-to-talk 데모). hello!
 
 웹 ↔ /ws(WebSocket): 오디오 in/out + 제어 이벤트.
 한 턴: 버튼 start → 마이크 PCM16 16k 프레임 → Deepgram STT → 버튼 end → finalize
