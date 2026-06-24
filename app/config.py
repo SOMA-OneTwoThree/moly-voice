@@ -17,6 +17,9 @@ ELEVENLABS_API_KEY = env("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = env("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_MODEL = env("ELEVENLABS_MODEL", "eleven_flash_v2_5")
 STT_LANGUAGE = env("STT_LANGUAGE", "multi")
+# 버튼 end 후 Deepgram finalize(최종 transcript) 완료를 기다리는 상한(ms).
+# flush 왕복 전체를 덮어야 하므로 한 홉 RTT보다 넉넉히. 짧으면 정상 발화가 timeout→빈 결과로 회귀.
+STT_FINALIZE_GRACE_MS = int(env("STT_FINALIZE_GRACE_MS", "2000") or "2000")
 LLM_URL = env("LLM_URL", "http://localhost:3000/api/chat")
 # 캐시 워밍(prefetch) 엔드포인트 — /chat 와 같은 호스트의 /warm.
 WARM_URL = env("WARM_URL", LLM_URL.replace("/chat", "/warm"))

@@ -9,15 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
+from starlette.websockets import WebSocketState
 
-from .config import DEMO_USER_ID, WARM_URL
+from .config import DEMO_USER_ID, STT_FINALIZE_GRACE_MS, WARM_URL
 from .gateway.orchestrator import run_turn
 from .stt.deepgram import DeepgramStream
+
+_log = logging.getLogger("moly-voice")
 
 app = FastAPI(title="moly-voice")
 
@@ -41,13 +45,17 @@ async def _warm_cache() -> None:
 async def _pump_stt(dg: DeepgramStream, send_json) -> str:
     """Deepgram 결과를 읽어 interim은 표시, final은 누적 → 최종 transcript 반환."""
     finals: list[str] = []
-    async for txt, is_final in dg.results():
-        if is_final:
-            finals.append(txt)
-        else:
-            await send_json({"type": "transcript", "text": txt, "final": False})
+    try:
+        async for txt, is_final in dg.results():
+            if is_final:
+                finals.append(txt)
+            else:
+                await send_json({"type": "transcript", "text": txt, "final": False})
+    except Exception as e:  # noqa: BLE001  (orphan/소켓 종료 시 ConnectionClosed 등 — 태스크 통째로 안 죽게)
+        _log.debug("stt pump ended: %s", e)
     transcript = " ".join(finals).strip()
-    await send_json({"type": "transcript", "text": transcript, "final": True})
+    if transcript:  # 빈 transcript는 클라이언트로 보내지 않음(불필요 final 이벤트/잠재 크래시점 제거)
+        await send_json({"type": "transcript", "text": transcript, "final": True})
     return transcript
 
 
@@ -57,13 +65,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
     asyncio.create_task(_warm_cache())  # 연결 즉시 캐시 prefetch(non-blocking)
     send_lock = asyncio.Lock()  # 동시 send 직렬화(Starlette WS는 concurrent send 비안전)
 
-    async def send_json(d: dict) -> None:
+    async def _safe_send(do_send) -> None:
         async with send_lock:
-            await ws.send_json(d)
+            if ws.application_state != WebSocketState.CONNECTED:
+                return  # 이미 닫힘 → 조용히 스킵(백그라운드 태스크가 예외로 죽지 않게)
+            try:
+                await do_send()
+            except RuntimeError as e:  # 상태 통과 후 전송 중 닫힘("Cannot call send once a close...")
+                _log.debug("ws send skipped (closed): %s", e)
+
+    async def send_json(d: dict) -> None:
+        await _safe_send(lambda: ws.send_json(d))
 
     async def send_bytes(b: bytes) -> None:
-        async with send_lock:
-            await ws.send_bytes(b)
+        await _safe_send(lambda: ws.send_bytes(b))
 
     messages: list[dict] = []
     dg: DeepgramStream | None = None
@@ -79,6 +94,19 @@ async def ws_endpoint(ws: WebSocket) -> None:
             except asyncio.CancelledError:
                 pass
         turn_task = None
+
+    async def cancel_stt() -> None:
+        """진행 중인 STT 스트림/태스크 정리 — orphan 방지 + dg.close 일원화."""
+        nonlocal dg, stt_task
+        if stt_task and not stt_task.done():
+            stt_task.cancel()
+            try:
+                await stt_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        if dg:
+            await dg.close()
+        dg, stt_task = None, None
 
     async def safe_turn(transcript: str) -> None:
         try:
@@ -116,6 +144,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
             if t == "start":
                 await cancel_turn()  # barge-in: 진행 중 발화 중단
+                await cancel_stt()   # 직전 턴 잔여 STT 정리(중복 start 대비, None이면 no-op)
                 dg = DeepgramStream()
                 await dg.open()
                 await send_json({"type": "status", "state": "listening"})
@@ -124,21 +153,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
             elif t == "end":
                 if dg and stt_task:
                     await dg.finalize()
-                    try:
-                        transcript = await asyncio.wait_for(stt_task, timeout=10)
+                    try:  # grace: 최종 transcript가 그 안에 오면 즉시 진행, 안 오면 크래시 없이 스킵
+                        transcript = await asyncio.wait_for(
+                            stt_task, timeout=STT_FINALIZE_GRACE_MS / 1000)
                     except (asyncio.TimeoutError, Exception):  # noqa: BLE001
                         transcript = ""
-                    await dg.close()
-                    dg, stt_task = None, None
-                    if transcript.strip():
+                    await cancel_stt()  # 성공·타임아웃 양쪽에서 orphan 방지 + dg.close 일원화
+                    if transcript.strip():  # 빈 결과면 LLM 호출 안 함
                         turn_task = asyncio.create_task(safe_turn(transcript))
 
             elif t == "interrupt":
                 await cancel_turn()
                 await send_json({"type": "status", "state": "idle"})
     finally:
-        if dg:
-            await dg.close()
+        await cancel_stt()   # 리스닝 중 disconnect 시 orphan stt_task 정리(근본 원인 해소)
         await cancel_turn()
 
 
