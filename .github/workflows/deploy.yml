@@ -74,21 +74,53 @@ jobs:
             --output text)"
           echo "CommandId: $COMMAND_ID"
 
-          echo "==> 명령 완료 대기 (최대 약 10분)"
+          echo "==> 명령 완료 대기 (10초 간격, 최대 약 10분)"
           # aws ssm wait는 기본 타임아웃이 짧을 수 있어 직접 폴링한다.
+          # 핵심: get-command-invocation 실패를 '|| echo Pending'으로 삼키지 않는다.
+          #  - SendCommand 직후엔 invocation이 아직 등록 안 돼 InvocationDoesNotExist가
+          #    날 수 있고 이건 정상이므로, 최초 GRACE_POLLS(약 30초)까진 Pending으로
+          #    간주하고 계속 폴링한다.
+          #  - 그 외 조회 실패(AccessDenied/네트워크 등)는 stderr를 그대로 로그에 출력하고,
+          #    연속 MAX_QUERY_FAILS회 누적되면 즉시 워크플로를 실패시킨다 (조용히 위장 금지).
           STATUS="Pending"
+          GRACE_POLLS=3          # 최초 3회(약 30초)까진 InvocationDoesNotExist 허용
+          MAX_QUERY_FAILS=3      # 연속 조회 실패 3회면 실패 처리
+          query_fails=0
+          finished=0
           for i in $(seq 1 60); do
             sleep 10
-            STATUS="$(aws ssm get-command-invocation \
-              --region "$AWS_REGION" \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$EC2_INSTANCE_ID" \
-              --query "Status" \
-              --output text 2>/dev/null || echo 'Pending')"
-            echo "  [$i] status=$STATUS"
-            case "$STATUS" in
-              Success|Failed|Cancelled|TimedOut) break ;;
-            esac
+            # stderr는 파일로 분리 캡처해 에러 유형을 구분한다 (성공 시 STATUS만 stdout으로 들어옴)
+            err_file="$(mktemp)"
+            if STATUS="$(aws ssm get-command-invocation \
+                  --region "$AWS_REGION" \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$EC2_INSTANCE_ID" \
+                  --query "Status" \
+                  --output text 2>"$err_file")"; then
+              query_fails=0
+              echo "  [$i] status=$STATUS"
+              case "$STATUS" in
+                Success|Failed|Cancelled|TimedOut) rm -f "$err_file"; finished=1; break ;;
+              esac
+            else
+              err_msg="$(cat "$err_file")"
+              if [ "$i" -le "$GRACE_POLLS" ] && printf '%s' "$err_msg" | grep -q "InvocationDoesNotExist"; then
+                # SendCommand 직후 invocation 등록 지연 — 정상. 계속 폴링한다.
+                echo "  [$i] status=Pending (invocation 등록 대기 중)"
+                STATUS="Pending"
+              else
+                # 권한/네트워크 등 진짜 조회 실패 — 숨기지 말고 stderr를 그대로 드러낸다.
+                query_fails=$((query_fails + 1))
+                echo "  [$i] get-command-invocation 조회 실패 (${query_fails}/${MAX_QUERY_FAILS}):" >&2
+                printf '%s\n' "$err_msg" >&2
+                if [ "$query_fails" -ge "$MAX_QUERY_FAILS" ]; then
+                  rm -f "$err_file"
+                  echo "==> get-command-invocation 연속 ${MAX_QUERY_FAILS}회 실패 — 배포 상태 확인 불가, 즉시 실패 처리" >&2
+                  exit 1
+                fi
+              fi
+            fi
+            rm -f "$err_file"
           done
 
           echo "==> EC2 배포 표준출력 ----------------------------------------"
@@ -108,8 +140,12 @@ jobs:
             --output text || true
 
           echo "==> 최종 상태: $STATUS"
+          if [ "$finished" -ne 1 ]; then
+            echo "배포 실패: 타임아웃 (약 10분 내에 명령이 종료 상태에 도달하지 못함, 마지막 status=$STATUS)" >&2
+            exit 1
+          fi
           if [ "$STATUS" != "Success" ]; then
-            echo "배포 실패 (status=$STATUS)" >&2
+            echo "배포 실패 (status=$STATUS) — 위 표준에러 로그에서 원인 확인" >&2
             exit 1
           fi
           echo "==> 배포 성공"
