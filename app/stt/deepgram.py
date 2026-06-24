@@ -5,12 +5,16 @@ push-to-talk라 endpointing(자동 발화종료)은 끄고, 버튼 end → final
 """
 from __future__ import annotations
 
+import array
 import json
+import logging
 from typing import AsyncIterator
 
 import websockets
 
-from ..config import DEEPGRAM_API_KEY, STT_LANGUAGE
+from ..config import DEEPGRAM_API_KEY, STT_DEBUG, STT_LANGUAGE
+
+_log = logging.getLogger("moly-voice")
 
 _SR = 16000
 _URL = "wss://api.deepgram.com/v1/listen"
@@ -22,6 +26,10 @@ class DeepgramStream:
     def __init__(self, model: str = "nova-3") -> None:
         self.model = model
         self._ws: websockets.WebSocketClientProtocol | None = None
+        # 진단용 송신 통계
+        self._sent_frames = 0
+        self._sent_bytes = 0
+        self._peak = 0  # int16 절댓값 피크(전부 0이면 무음)
 
     async def open(self) -> None:
         # endpointing: 발화 도중 멈춤마다 부분 final을 미리 확정 → 버튼 end 때 flush가 빨라짐(속도용).
@@ -38,11 +46,21 @@ class DeepgramStream:
             self._ws = await websockets.connect(url, extra_headers=hdrs, max_size=None)
 
     async def send_audio(self, pcm: bytes) -> None:
-        if self._ws:
-            await self._ws.send(pcm)
+        if not self._ws:
+            return
+        # int16 절댓값 피크로 무음 판별(전부 0이면 peak=0 → 마이크/포맷 문제)
+        a = array.array("h")
+        a.frombytes(pcm[: len(pcm) // 2 * 2])
+        if a:
+            self._peak = max(self._peak, max(abs(x) for x in a))
+        self._sent_frames += 1
+        self._sent_bytes += len(pcm)
+        await self._ws.send(pcm)  # 실패 시 예외 → 호출부(main.py)에서 로깅
 
     async def finalize(self) -> None:
         """버튼 end → 남은 오디오 최종화 요청(이후 results()가 Metadata 보고 종료)."""
+        _log.info("DG sent: frames=%d bytes=%d peak=%d(/32767)",
+                  self._sent_frames, self._sent_bytes, self._peak)
         if self._ws:
             await self._ws.send(json.dumps({"type": "CloseStream"}))
 
@@ -53,12 +71,19 @@ class DeepgramStream:
         async for raw in self._ws:
             msg = json.loads(raw)
             t = msg.get("type")
+            # Results 외(Metadata/Error/UtteranceEnd 등)는 항상, Results는 STT_DEBUG일 때만 raw 노출
+            if STT_DEBUG or t != "Results":
+                _log.info("DG raw[%s]: %s", t, raw[:300])
             if t == "Results":
                 alt = (msg.get("channel", {}).get("alternatives") or [{}])[0]
                 txt = alt.get("transcript", "")
+                if STT_DEBUG:
+                    _log.info("DG Results: is_final=%s txt=%r", msg.get("is_final"), txt)
                 if txt:
                     yield txt, bool(msg.get("is_final"))
             elif t == "Metadata":
+                _log.info("DG Metadata duration=%.2fs channels=%s",
+                          msg.get("duration", -1), msg.get("channels"))
                 break
 
     async def close(self) -> None:

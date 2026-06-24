@@ -85,6 +85,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
     dg: DeepgramStream | None = None
     stt_task: asyncio.Task | None = None
     turn_task: asyncio.Task | None = None
+    rx_frames = rx_bytes = dropped = 0  # 턴별 인바운드 오디오 진단 카운터
 
     async def cancel_turn() -> None:
         nonlocal turn_task
@@ -130,11 +131,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
             audio = msg.get("bytes")
             if audio is not None:
+                rx_frames += 1
+                rx_bytes += len(audio)
                 if dg:
                     try:
                         await dg.send_audio(audio)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as e:  # noqa: BLE001  # 기존 무조건 pass → 가시화
+                        _log.warning("DG send_audio 실패: %r", e)
+                else:
+                    dropped += 1  # dg.open() 완료 전 도착 → 드롭(EC2 지연 시 증가)
                 continue
 
             text = msg.get("text")
@@ -146,6 +151,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
             if t == "start":
                 await cancel_turn()  # barge-in: 진행 중 발화 중단
                 await cancel_stt()   # 직전 턴 잔여 STT 정리(중복 start 대비, None이면 no-op)
+                rx_frames = rx_bytes = dropped = 0  # 새 턴 진단 카운터 리셋
+                sr = evt.get("sampleRate")
+                if sr and sr != 16000:
+                    _log.warning("브라우저 AudioContext sampleRate=%s ≠ Deepgram 16000 — 포맷 불일치 가능", sr)
+                else:
+                    _log.info("mic sampleRate=%s", sr)
                 dg = DeepgramStream()
                 try:
                     await dg.open()
@@ -159,6 +170,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 stt_task = asyncio.create_task(_pump_stt(dg, send_json))
 
             elif t == "end":
+                _log.info("RX audio: frames=%d bytes=%d dropped(before dg)=%d",
+                          rx_frames, rx_bytes, dropped)
                 if dg and stt_task:
                     await dg.finalize()
                     try:  # grace: 최종 transcript가 그 안에 오면 즉시 진행
