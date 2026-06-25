@@ -212,7 +212,10 @@ function setMode(m) {
 document.querySelectorAll("#mode button").forEach((b) =>
   (b.onclick = () => setMode(b.dataset.mode)));
 $("send").onclick = sendChat;
-$("msg").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendChat(); } });
+$("msg").addEventListener("keydown", (e) => {
+  // 한글 등 IME 조합 중 Enter는 조합 확정용 → 전송 금지(조합 끝난 Enter만 전송).
+  if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendChat(); }
+});
 $("talk").onclick = toggleTalk;
 
 // 페이지 로드 시 WS 미리 연결 — 첫 입력의 "CONNECTING" 경합·중복 방지(오디오는 첫 클릭 때).
