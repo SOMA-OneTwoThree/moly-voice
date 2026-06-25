@@ -22,9 +22,13 @@ STT_LANGUAGE = env("STT_LANGUAGE", "multi")
 STT_FINALIZE_GRACE_MS = int(env("STT_FINALIZE_GRACE_MS", "2000") or "2000")
 # STT 진단 상세 로그 토글(프레임 단위 raw 로깅 등). 평시 0, 디버깅 시 1.
 STT_DEBUG = env("STT_DEBUG", "0") not in ("0", "", "false", "False")
-LLM_URL = env("LLM_URL", "http://localhost:3000/api/chat")
-# 캐시 워밍(prefetch) 엔드포인트 — /chat 와 같은 호스트의 /warm.
-WARM_URL = env("WARM_URL", LLM_URL.replace("/chat", "/warm"))
+LLM_URL = env("LLM_URL", "http://localhost:8000/chat")
+# 장기기억 엔드포인트 — /chat 와 같은 베이스의 /memory/*.
+# LLM_URL의 "/chat"을 치환해 파생(기존 컨벤션). LLM_URL이 moly-llm 실경로(.../chat)를
+# 가리켜야 정상 파생됨. 인프라에서 MEMORY_LOAD_URL/MEMORY_COMMIT_URL 명시 override 가능.
+_LLM_BASE = LLM_URL.replace("/chat", "")
+MEMORY_LOAD_URL = env("MEMORY_LOAD_URL", f"{_LLM_BASE}/memory/load")
+MEMORY_COMMIT_URL = env("MEMORY_COMMIT_URL", f"{_LLM_BASE}/memory/commit")
 
 # 데모 고정 user_id(인증 전). Mem0 장기기억이 이 id로 쌓인다.
 DEMO_USER_ID = env("DEMO_USER_ID", "molly_voice_demo")

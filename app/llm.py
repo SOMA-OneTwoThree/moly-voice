@@ -13,11 +13,15 @@ import httpx
 from .config import LLM_URL
 
 
-async def stream_reply(messages: list[dict], user_id: str | None) -> AsyncIterator[str]:
-    """LLM 응답 delta 문자열을 순서대로 yield."""
+async def stream_reply(
+    messages: list[dict], user_id: str | None, memory: str = ""
+) -> AsyncIterator[str]:
+    """LLM 응답 delta 문자열을 순서대로 yield. memory는 세션시작 로드분(매 턴 동일)."""
     body: dict = {"messages": messages}
     if user_id:
         body["user_id"] = user_id
+    if memory:
+        body["memory"] = memory
     buf = ""
     async with httpx.AsyncClient(timeout=60.0) as client:
         async with client.stream("POST", LLM_URL, json=body) as r:

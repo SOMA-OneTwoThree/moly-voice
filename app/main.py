@@ -12,13 +12,13 @@ import json
 import logging
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
-from .config import DEMO_USER_ID, STT_FINALIZE_GRACE_MS, WARM_URL
+from .config import STT_FINALIZE_GRACE_MS
 from .gateway.orchestrator import run_turn
+from .memory import commit_memory, load_memory
 from .stt.deepgram import DeepgramStream
 
 _log = logging.getLogger("moly-voice")
@@ -32,15 +32,6 @@ _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "moly-voice"}
-
-
-async def _warm_cache() -> None:
-    """세션 연결 시 Mem0 캐시 prefetch — 첫 턴 search 미스(~0.7s) 제거. fail-safe."""
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as c:
-            await c.post(WARM_URL, json={"user_id": DEMO_USER_ID})
-    except Exception:  # noqa: BLE001
-        pass
 
 
 async def _pump_stt(dg: DeepgramStream, send_json) -> str:
@@ -65,7 +56,7 @@ async def _pump_stt(dg: DeepgramStream, send_json) -> str:
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
-    asyncio.create_task(_warm_cache())  # 연결 즉시 캐시 prefetch(non-blocking)
+    memory_text = await load_memory()  # 세션시작 장기기억 1회 로드(세션 내내 고정). fail-safe → ""
     send_lock = asyncio.Lock()  # 동시 send 직렬화(Starlette WS는 concurrent send 비안전)
 
     async def _safe_send(do_send) -> None:
@@ -114,7 +105,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
     async def safe_turn(transcript: str) -> None:
         try:
-            await run_turn(send_json, send_bytes, messages, transcript)
+            await run_turn(send_json, send_bytes, messages, transcript, memory=memory_text)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -199,6 +190,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
     finally:
         await cancel_stt()   # 리스닝 중 disconnect 시 orphan stt_task 정리(근본 원인 해소)
         await cancel_turn()
+        await commit_memory(messages)  # 세션종료 → transcript를 mem0에 커밋(fail-safe, 빈 세션 스킵)
 
 
 # 데모 정적 페이지 서빙(/). 라우트(/health,/ws) 정의 후 마지막에 마운트.
