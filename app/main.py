@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
 from .config import STT_FINALIZE_GRACE_MS
+from .feedback import request_feedback
 from .gateway.orchestrator import run_turn
 from .memory import commit_memory, load_memory
 from .stt.deepgram import DeepgramStream
@@ -116,6 +117,14 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 except Exception:  # noqa: BLE001
                     pass
 
+    async def do_feedback() -> None:
+        """'교정 받기' — 현재까지의 대화로 교정 요청 후 결과 전송(블로킹 회피용 태스크)."""
+        try:
+            result = await request_feedback(messages)
+            await send_json({"type": "feedback", "data": result})
+        except Exception as e:  # noqa: BLE001
+            await send_json({"type": "feedback_error", "message": str(e)[:200]})
+
     try:
         while True:
             msg = await ws.receive()
@@ -192,6 +201,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 await cancel_stt()   # 마이크 열려있으면 정리
                 _log.info("text_turn: %r", msg_text)
                 turn_task = asyncio.create_task(safe_turn(msg_text))
+
+            elif t == "request_feedback":  # '교정 받기' — 전체 히스토리 교정(논블로킹)
+                asyncio.create_task(do_feedback())
 
             elif t == "interrupt":
                 await cancel_turn()

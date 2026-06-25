@@ -29,6 +29,8 @@ LLM_URL = env("LLM_URL", "http://localhost:8000/chat")
 _LLM_BASE = LLM_URL.replace("/chat", "")
 MEMORY_LOAD_URL = env("MEMORY_LOAD_URL", f"{_LLM_BASE}/memory/load")
 MEMORY_COMMIT_URL = env("MEMORY_COMMIT_URL", f"{_LLM_BASE}/memory/commit")
+# 교정 — '교정 받기' 시 게이트웨이가 호출(브라우저는 moly-llm 직접 접근 불가).
+FEEDBACK_URL = env("FEEDBACK_URL", f"{_LLM_BASE}/feedback")
 
 # 데모 고정 user_id(인증 전). Mem0 장기기억이 이 id로 쌓인다.
 DEMO_USER_ID = env("DEMO_USER_ID", "molly_voice_demo")

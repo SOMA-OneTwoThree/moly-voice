@@ -65,9 +65,60 @@ function onMessage(ev) {
   } else if (m.type === "status") {
     setStatus(m.state);
     if (m.state === "listening" && pendingListen) { pendingListen.resolve(); pendingListen = null; }
+  } else if (m.type === "feedback") {
+    renderFeedback(m.data);
+    resetFeedbackBtn();
+  } else if (m.type === "feedback_error") {
+    $("feedback").innerHTML = '<div class="fb-empty">교정을 불러오지 못했어요. 잠시 후 다시 시도하세요.</div>';
+    resetFeedbackBtn();
   } else if (m.type === "error") {
     if (pendingListen) { pendingListen.reject(new Error(m.message)); pendingListen = null; }
     bubble("molly", "⚠️ " + m.message);
+  }
+}
+
+// ── 교정 ──
+function resetFeedbackBtn() { $("getfb").disabled = false; $("getfb").textContent = "교정 받기"; }
+
+async function requestFeedback() {
+  try {
+    await connect();
+    if (!ws || ws.readyState !== 1) throw new Error("연결 준비 중");
+    $("getfb").disabled = true; $("getfb").textContent = "교정 중…";
+    $("feedback").innerHTML = "";
+    ws.send(JSON.stringify({ type: "request_feedback" }));
+  } catch (e) {
+    $("feedback").innerHTML = '<div class="fb-empty">' + (e.message || e) + "</div>";
+    resetFeedbackBtn();
+  }
+}
+
+function renderFeedback(data) {
+  const el = $("feedback");
+  el.innerHTML = "";
+  if (!data || !data.has_corrections || !(data.corrections || []).length) {
+    el.innerHTML = '<div class="fb-empty">이번 대화는 교정할 부분이 없었어요.</div>';
+    return;
+  }
+  const title = document.createElement("div");
+  title.className = "fb-title";
+  title.textContent = "교정 (" + data.corrections.length + ")";
+  el.appendChild(title);
+  const TYPE = { grammar: "문법", vocabulary: "단어", naturalness: "자연스러움" };
+  for (const c of data.corrections) {
+    const card = document.createElement("div");
+    card.className = "corr";
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = TYPE[c.type] || c.type;
+    const line = document.createElement("div");
+    const orig = document.createElement("span"); orig.className = "orig"; orig.textContent = c.original;
+    const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
+    const fix = document.createElement("span"); fix.className = "fix"; fix.textContent = c.corrected;
+    line.append(orig, arrow, fix);
+    const why = document.createElement("div"); why.className = "why"; why.textContent = c.explanation;
+    card.append(badge, line, why);
+    el.appendChild(card);
   }
 }
 
@@ -217,6 +268,7 @@ $("msg").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendChat(); }
 });
 $("talk").onclick = toggleTalk;
+$("getfb").onclick = requestFeedback;
 
 // 페이지 로드 시 WS 미리 연결 — 첫 입력의 "CONNECTING" 경합·중복 방지(오디오는 첫 클릭 때).
 connect().catch(() => {});

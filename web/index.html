@@ -38,6 +38,21 @@
     #talk.on { background: #d62c2c; }
     .hidden { display: none; }
     #hint { color: #888; font-size: 13px; margin-top: 10px; text-align: center; }
+
+    /* 교정 */
+    #getfb { margin-top: 16px; width: 100%; padding: 12px; font-size: 15px;
+             border: 1px solid #0366d6; border-radius: 12px; background: #fff; color: #0366d6; cursor: pointer; }
+    #getfb:disabled { opacity: .5; cursor: default; }
+    #feedback { margin-top: 14px; }
+    .fb-title { font-weight: 600; margin: 10px 0 6px; }
+    .fb-empty { color: #888; padding: 8px 0; }
+    .corr { border: 1px solid #eee; border-radius: 12px; padding: 12px 14px; margin: 8px 0; background: #fafafa; }
+    .corr .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+                   background: #eef0ff; color: #3355aa; margin-bottom: 8px; }
+    .corr .orig { color: #b00020; text-decoration: line-through; }
+    .corr .arrow { color: #888; margin: 0 6px; }
+    .corr .fix { color: #1a7f37; font-weight: 600; }
+    .corr .why { color: #444; font-size: 14px; margin-top: 8px; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -59,7 +74,10 @@
     <button id="talk">🎤 말하기 시작</button>
   </div>
 
-  <div id="hint">채팅: 입력 후 전송(또는 Enter). 음성: 버튼을 눌러 말하고 다시 눌러 전송. 둘 다 Moly가 음성으로도 답합니다.</div>
+  <button id="getfb">교정 받기</button>
+  <div id="feedback"></div>
+
+  <div id="hint">채팅: 입력 후 전송(또는 Enter). 음성: 버튼을 눌러 말하고 다시 눌러 전송. 대화 후 '교정 받기'로 내 영어 첨삭을 받아보세요.</div>
   <script src="app.js"></script>
 </body>
 </html>
