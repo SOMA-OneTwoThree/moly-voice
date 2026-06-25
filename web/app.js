@@ -4,7 +4,7 @@
 const $ = (id) => document.getElementById(id);
 let ws, inCtx, micNode, micSource, micStream, outCtx;
 let nextTime = 0, sources = [];
-let listening = false, replyBuf = "", liveYou = null, muted = false, mode = "chat";
+let listening = false, replyBuf = "", liveYou = null, mode = "chat", sending = false;
 let tEnd = 0, tStt = 0, tReply = 0, tAudio = 0;
 let pendingListen = null;
 
@@ -19,15 +19,21 @@ function bubble(cls, text) {
   return d;
 }
 
-// ── WebSocket ──
-async function connect() {
-  if (ws && ws.readyState === 1) return;
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.binaryType = "arraybuffer";
-  ws.onmessage = onMessage;
-  ws.onclose = () => setStatus("disconnected");
-  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+// ── WebSocket (싱글톤 연결 — 동시 호출은 같은 연결을 공유, 재연결 안전) ──
+let connectPromise = null;
+function connect() {
+  if (ws && ws.readyState === 1) return Promise.resolve();
+  if (connectPromise) return connectPromise;          // 진행 중이면 그 연결을 기다림(중복 WS 방지)
+  connectPromise = new Promise((resolve, reject) => {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = onMessage;
+    ws.onopen = () => resolve();
+    ws.onerror = () => { connectPromise = null; reject(new Error("서버 연결 실패")); };
+    ws.onclose = () => { setStatus("disconnected"); connectPromise = null; };
+  });
+  return connectPromise;
 }
 
 // 오디오 재생 컨텍스트 확보(브라우저 정책상 user gesture 안에서 호출돼야 함).
@@ -80,9 +86,9 @@ function showLatency() {
   $("log").scrollTop = $("log").scrollHeight;
 }
 
-// ── 재생 (PCM 24k) ── 음소거 시 스킵.
+// ── 재생 (PCM 24k) ──
 function playPCM(arrayBuffer) {
-  if (!outCtx || muted) return;
+  if (!outCtx) return;
   const i16 = new Int16Array(arrayBuffer);
   const f32 = new Float32Array(i16.length);
   for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
@@ -102,17 +108,22 @@ function stopPlayback() {
 
 // ── 채팅 전송 ──
 async function sendChat() {
+  if (sending) return;                       // 중복 전송 방지(연결 대기 중 재입력)
   const text = $("msg").value.trim();
   if (!text) return;
+  sending = true;
   try {
-    await connect();
-    await ensureAudio();          // 클릭=user gesture → TTS 재생 가능
-    stopPlayback();               // 이전 응답 말하던 중이면 끊고(barge-in)
-    bubble("you", text);          // 내 메시지는 클라가 즉시 렌더(서버 transcript 불필요)
+    await connect();                         // 이미 연결돼 있으면 즉시
+    await ensureAudio();                      // 클릭=user gesture → TTS 재생 가능
+    if (!ws || ws.readyState !== 1) throw new Error("연결 준비 중이에요. 잠시 후 다시 시도하세요.");
+    stopPlayback();                           // 이전 응답 말하던 중이면 끊고(barge-in)
     ws.send(JSON.stringify({ type: "text_turn", text }));
+    bubble("you", text);                      // 전송 성공 후 렌더(실패 시 잔여 버블 없음)
     $("msg").value = "";
   } catch (e) {
     bubble("molly", "⚠️ " + (e.message || e));
+  } finally {
+    sending = false;
   }
 }
 
@@ -151,6 +162,7 @@ async function toggleTalk() {
   try {
     await connect();
     await ensureAudio();
+    if (!ws || ws.readyState !== 1) throw new Error("서버 연결 준비 중");
     if (!listening) {
       stopPlayback();
       await prepareMic();
@@ -196,18 +208,12 @@ function setMode(m) {
   if (m === "chat") $("msg").focus();
 }
 
-function setMuted(v) {
-  muted = v;
-  if (muted) stopPlayback();
-  const icon = muted ? "🔇" : "🔊";
-  $("mute").textContent = icon; $("mute2").textContent = icon;
-}
-
 // ── 바인딩 ──
 document.querySelectorAll("#mode button").forEach((b) =>
   (b.onclick = () => setMode(b.dataset.mode)));
 $("send").onclick = sendChat;
 $("msg").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendChat(); } });
 $("talk").onclick = toggleTalk;
-$("mute").onclick = () => setMuted(!muted);
-$("mute2").onclick = () => setMuted(!muted);
+
+// 페이지 로드 시 WS 미리 연결 — 첫 입력의 "CONNECTING" 경합·중복 방지(오디오는 첫 클릭 때).
+connect().catch(() => {});
