@@ -184,6 +184,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     else:  # 빈 결과 → 경고 + LLM 호출 스킵
                         _log.warning("STT 빈 결과 — LLM 호출 스킵")
 
+            elif t == "text_turn":  # 채팅 입력 — STT 건너뛰고 텍스트를 바로 턴으로
+                msg_text = (evt.get("text") or "").strip()
+                if not msg_text:
+                    continue
+                await cancel_turn()  # barge-in: 진행 중 응답 중단
+                await cancel_stt()   # 마이크 열려있으면 정리
+                _log.info("text_turn: %r", msg_text)
+                turn_task = asyncio.create_task(safe_turn(msg_text))
+
             elif t == "interrupt":
                 await cancel_turn()
                 await send_json({"type": "status", "state": "idle"})

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Moly · 실시간 음성 데모</title>
+  <title>Moly · 채팅 & 음성 데모</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px;
@@ -21,18 +21,49 @@
     .molly { background: #f0f0f3; color: #111; }
     .live  { opacity: 0.6; font-style: italic; }
     .latency { color: #888; font-size: 12px; margin: 4px 0 12px; font-variant-numeric: tabular-nums; }
-    #talk { width: 100%; padding: 18px; font-size: 18px; border: 0; border-radius: 14px;
+
+    /* 모드 토글 (세그먼트) */
+    #mode { display: inline-flex; gap: 0; background: #eee; border-radius: 999px; padding: 3px; margin-bottom: 12px; }
+    #mode button { border: 0; background: transparent; padding: 7px 18px; border-radius: 999px;
+                   font-size: 14px; color: #555; cursor: pointer; }
+    #mode button.active { background: #fff; color: #111; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+
+    /* 입력 바 */
+    .bar { display: flex; gap: 8px; align-items: center; }
+    #msg { flex: 1; padding: 14px; font-size: 16px; border: 1px solid #ddd; border-radius: 12px; }
+    #send { padding: 14px 20px; font-size: 16px; border: 0; border-radius: 12px;
+            background: #0366d6; color: #fff; cursor: pointer; }
+    #talk { flex: 1; padding: 18px; font-size: 18px; border: 0; border-radius: 14px;
             background: #0366d6; color: #fff; cursor: pointer; }
     #talk.on { background: #d62c2c; }
+    #mute { padding: 12px 14px; font-size: 16px; border: 1px solid #ddd; border-radius: 12px;
+            background: #fafafa; cursor: pointer; }
+    .hidden { display: none; }
     #hint { color: #888; font-size: 13px; margin-top: 10px; text-align: center; }
   </style>
 </head>
 <body>
-  <h1>🛸 Moly · 실시간 음성 데모</h1>
+  <h1>🛸 Moly · 채팅 &amp; 음성</h1>
   <div>상태: <span id="status">idle</span></div>
   <div id="log"></div>
-  <button id="talk">🎤 말하기 시작</button>
-  <div id="hint">버튼을 눌러 말하고, 다시 눌러 전송하세요. 말하는 중 버튼을 누르면 끼어듭니다.</div>
+
+  <div id="mode">
+    <button data-mode="chat" class="active">💬 채팅</button>
+    <button data-mode="voice">🎤 음성</button>
+  </div>
+
+  <div id="chatbar" class="bar">
+    <input id="msg" type="text" placeholder="메시지를 입력하세요…" autocomplete="off" />
+    <button id="send">전송</button>
+    <button id="mute" title="음성 응답 끄기/켜기">🔊</button>
+  </div>
+
+  <div id="voicebar" class="bar hidden">
+    <button id="talk">🎤 말하기 시작</button>
+    <button id="mute2" title="음성 응답 끄기/켜기">🔊</button>
+  </div>
+
+  <div id="hint">채팅: 입력 후 전송(또는 Enter). 음성: 버튼을 눌러 말하고 다시 눌러 전송. 둘 다 Moly가 음성으로도 답합니다.</div>
   <script src="app.js"></script>
 </body>
 </html>
