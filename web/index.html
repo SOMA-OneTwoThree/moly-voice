@@ -36,8 +36,6 @@
     #talk { flex: 1; padding: 18px; font-size: 18px; border: 0; border-radius: 14px;
             background: #0366d6; color: #fff; cursor: pointer; }
     #talk.on { background: #d62c2c; }
-    #mute { padding: 12px 14px; font-size: 16px; border: 1px solid #ddd; border-radius: 12px;
-            background: #fafafa; cursor: pointer; }
     .hidden { display: none; }
     #hint { color: #888; font-size: 13px; margin-top: 10px; text-align: center; }
   </style>
@@ -55,12 +53,10 @@
   <div id="chatbar" class="bar">
     <input id="msg" type="text" placeholder="메시지를 입력하세요…" autocomplete="off" />
     <button id="send">전송</button>
-    <button id="mute" title="음성 응답 끄기/켜기">🔊</button>
   </div>
 
   <div id="voicebar" class="bar hidden">
     <button id="talk">🎤 말하기 시작</button>
-    <button id="mute2" title="음성 응답 끄기/켜기">🔊</button>
   </div>
 
   <div id="hint">채팅: 입력 후 전송(또는 Enter). 음성: 버튼을 눌러 말하고 다시 눌러 전송. 둘 다 Moly가 음성으로도 답합니다.</div>
