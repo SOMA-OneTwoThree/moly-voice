@@ -14,7 +14,7 @@
     #status.listening { background: #e0f0ff; color: #0366d6; }
     #status.thinking  { background: #fff3cd; color: #8a6d00; }
     #status.speaking  { background: #e6ffed; color: #1a7f37; }
-    #log { margin: 20px 0; min-height: 240px; }
+    #log { margin: 20px 0; min-height: 200px; }
     .bubble { margin: 8px 0; padding: 10px 14px; border-radius: 14px; max-width: 80%;
               white-space: pre-wrap; line-height: 1.5; }
     .you   { background: #0366d6; color: #fff; margin-left: auto; }
@@ -22,7 +22,15 @@
     .live  { opacity: 0.6; font-style: italic; }
     .latency { color: #888; font-size: 12px; margin: 4px 0 12px; font-variant-numeric: tabular-nums; }
 
-    /* 모드 토글 (세그먼트) */
+    /* 시작 / 끊기 */
+    #start { margin: 24px 0; width: 100%; padding: 18px; font-size: 18px; border: 0;
+             border-radius: 14px; background: #0366d6; color: #fff; cursor: pointer; }
+    #start:disabled { opacity: .5; cursor: default; }
+    #end { margin-top: 14px; width: 100%; padding: 12px; font-size: 15px; border: 1px solid #d62c2c;
+           border-radius: 12px; background: #fff; color: #d62c2c; cursor: pointer; }
+    #end:disabled { opacity: .5; cursor: default; }
+
+    /* 모드 토글 */
     #mode { display: inline-flex; gap: 0; background: #eee; border-radius: 999px; padding: 3px; margin-bottom: 12px; }
     #mode button { border: 0; background: transparent; padding: 7px 18px; border-radius: 999px;
                    font-size: 14px; color: #555; cursor: pointer; }
@@ -40,9 +48,6 @@
     #hint { color: #888; font-size: 13px; margin-top: 10px; text-align: center; }
 
     /* 교정 */
-    #getfb { margin-top: 16px; width: 100%; padding: 12px; font-size: 15px;
-             border: 1px solid #0366d6; border-radius: 12px; background: #fff; color: #0366d6; cursor: pointer; }
-    #getfb:disabled { opacity: .5; cursor: default; }
     #feedback { margin-top: 14px; }
     .fb-title { font-weight: 600; margin: 10px 0 6px; }
     .fb-empty { color: #888; padding: 8px 0; }
@@ -58,26 +63,32 @@
 <body>
   <h1>🛸 Moly · 채팅 &amp; 음성</h1>
   <div>상태: <span id="status">idle</span></div>
-  <div id="log"></div>
 
-  <div id="mode">
-    <button data-mode="chat" class="active">💬 채팅</button>
-    <button data-mode="voice">🎤 음성</button>
+  <button id="start">몰리와 대화하기</button>
+
+  <div id="session" class="hidden">
+    <div id="log"></div>
+
+    <div id="mode">
+      <button data-mode="chat" class="active">💬 채팅</button>
+      <button data-mode="voice">🎤 음성</button>
+    </div>
+
+    <div id="chatbar" class="bar">
+      <input id="msg" type="text" placeholder="메시지를 입력하세요…" autocomplete="off" />
+      <button id="send">전송</button>
+    </div>
+
+    <div id="voicebar" class="bar hidden">
+      <button id="talk">🎤 말하기 시작</button>
+    </div>
+
+    <button id="end">연결 끊기</button>
   </div>
 
-  <div id="chatbar" class="bar">
-    <input id="msg" type="text" placeholder="메시지를 입력하세요…" autocomplete="off" />
-    <button id="send">전송</button>
-  </div>
-
-  <div id="voicebar" class="bar hidden">
-    <button id="talk">🎤 말하기 시작</button>
-  </div>
-
-  <button id="getfb">교정 받기</button>
   <div id="feedback"></div>
 
-  <div id="hint">채팅: 입력 후 전송(또는 Enter). 음성: 버튼을 눌러 말하고 다시 눌러 전송. 대화 후 '교정 받기'로 내 영어 첨삭을 받아보세요.</div>
+  <div id="hint">'몰리와 대화하기'로 세션을 시작하고, 채팅·음성으로 대화한 뒤 '연결 끊기'를 누르면 내 영어 교정을 받아요.</div>
   <script src="app.js"></script>
 </body>
 </html>
