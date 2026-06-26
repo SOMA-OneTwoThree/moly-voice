@@ -79,6 +79,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
     dg: DeepgramStream | None = None
     stt_task: asyncio.Task | None = None
     turn_task: asyncio.Task | None = None
+    fb_task: asyncio.Task | None = None  # 교정 요청(논블로킹) — 종료 시 정리
     rx_frames = rx_bytes = dropped = 0  # 턴별 인바운드 오디오 진단 카운터
 
     async def cancel_turn() -> None:
@@ -202,8 +203,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 _log.info("text_turn: %r", msg_text)
                 turn_task = asyncio.create_task(safe_turn(msg_text))
 
-            elif t == "request_feedback":  # '교정 받기' — 전체 히스토리 교정(논블로킹)
-                asyncio.create_task(do_feedback())
+            elif t == "request_feedback":  # 연결 끊기 전 교정(논블로킹) — 종료 시 finally가 정리
+                if fb_task and not fb_task.done():
+                    fb_task.cancel()
+                fb_task = asyncio.create_task(do_feedback())
 
             elif t == "interrupt":
                 await cancel_turn()
@@ -211,6 +214,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
     finally:
         await cancel_stt()   # 리스닝 중 disconnect 시 orphan stt_task 정리(근본 원인 해소)
         await cancel_turn()
+        if fb_task and not fb_task.done():  # 교정 미완 상태로 끊김 → orphan httpx 정리
+            fb_task.cancel()
+            try:
+                await fb_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         await commit_memory(messages)  # 세션종료 → transcript를 mem0에 커밋(fail-safe, 빈 세션 스킵)
 
 
