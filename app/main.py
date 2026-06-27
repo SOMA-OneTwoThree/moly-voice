@@ -39,7 +39,8 @@ from .config import (
 from .feedback import request_feedback
 from .gateway.orchestrator import run_turn
 from .memory import commit_memory, load_memory
-from .stt.deepgram import DeepgramStream
+from .stt.base import STTStream
+from .stt.factory import create_stt_stream
 
 _log = logging.getLogger("moly-voice")
 _log.setLevel(logging.INFO)  # STT 진단 로그(transcript/타임아웃/연결·인증)가 기본 WARNING에 묻히지 않게
@@ -54,7 +55,7 @@ def health() -> dict:
     return {"status": "ok", "service": "moly-voice"}
 
 
-async def _pump_stt(dg: DeepgramStream, send_json) -> str:
+async def _pump_stt(dg: STTStream, send_json) -> str:
     """Deepgram 결과를 읽어 interim은 표시, final은 누적 → 최종 transcript 반환."""
     finals: list[str] = []
     last_interim = ""
@@ -110,7 +111,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         await _safe_send(lambda: ws.send_bytes(b))
 
     messages: list[dict] = []
-    dg: DeepgramStream | None = None
+    dg: STTStream | None = None
     stt_task: asyncio.Task | None = None
     turn_task: asyncio.Task | None = None
     fb_task: asyncio.Task | None = None  # 교정 요청(논블로킹) — 종료 시 정리
@@ -262,7 +263,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     _log.warning("브라우저 AudioContext sampleRate=%s ≠ Deepgram 16000 — 포맷 불일치 가능", sr)
                 else:
                     _log.info("mic sampleRate=%s", sr)
-                dg = DeepgramStream()
+                dg = create_stt_stream()
                 try:
                     await dg.open()
                 except Exception as e:  # noqa: BLE001  # 인증/DNS/연결 실패 — 로그+알림 후 복귀

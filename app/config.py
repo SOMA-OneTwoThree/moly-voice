@@ -16,7 +16,10 @@ DEEPGRAM_API_KEY = env("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = env("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = env("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_MODEL = env("ELEVENLABS_MODEL", "eleven_flash_v2_5")
-STT_LANGUAGE = env("STT_LANGUAGE", "multi")
+# STT provider 선택: deepgram(기본) | elevenlabs(Scribe v2 RT) | soniox. 한 턴마다 팩토리가 생성.
+STT_PROVIDER = env("STT_PROVIDER", "deepgram")
+# 영어회화 앱 — 언어 고정 en(이전 기본 "multi"에서 변경). provider 공통.
+STT_LANGUAGE = env("STT_LANGUAGE", "en")
 # 버튼 end 후 Deepgram finalize(최종 transcript) 완료를 기다리는 상한(ms).
 # flush 왕복 전체를 덮어야 하므로 한 홉 RTT보다 넉넉히. 짧으면 정상 발화가 timeout→빈 결과로 회귀.
 STT_FINALIZE_GRACE_MS = int(env("STT_FINALIZE_GRACE_MS", "2000") or "2000")
