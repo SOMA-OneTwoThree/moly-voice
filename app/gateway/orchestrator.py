@@ -31,6 +31,7 @@ async def run_turn(
     send_bytes: SendBytes,
     messages: list[dict],
     transcript: str,
+    user_id: str = DEMO_USER_ID,
     memory: str = "",
 ) -> None:
     """messages를 in-place로 갱신(user/assistant 추가)하며 한 턴을 처리. memory=세션 고정분."""
@@ -52,7 +53,7 @@ async def run_turn(
         async for chunk in synthesize_stream(clean):
             await send_bytes(chunk)
 
-    async for delta in stream_reply(messages, DEMO_USER_ID, memory=memory):
+    async for delta in stream_reply(messages, user_id, memory=memory):
         reply_parts.append(delta)
         await send_json({"type": "reply_delta", "text": delta})
         for sentence in splitter.feed(delta):

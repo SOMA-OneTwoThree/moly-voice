@@ -1,0 +1,22 @@
+# 시크릿·로컬 전용 — 이미지에 절대 포함 금지
+.env
+.env.*
+!.env.example
+
+# 파이썬/가상환경/캐시
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# git·CI
+.git/
+.gitignore
+.github/
+
+# 개발 부산물
+tests/
+docs/
+*.md
+.DS_Store

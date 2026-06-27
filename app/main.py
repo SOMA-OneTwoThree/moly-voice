@@ -4,19 +4,38 @@
 한 턴: 버튼 start → 마이크 PCM16 16k 프레임 → Deepgram STT → 버튼 end → finalize
        → moly-llm /chat → 문장분할 → ElevenLabs TTS(PCM24k) → 웹 재생.
 barge-in: SPEAKING 중 start(또는 interrupt) → 진행 턴 cancel.
+
+세션 경계 = 사용자 의도(시작/종료 버튼)지 WS 연결 수명이 아님. 한 세션이 WS 연결
+여러 개에 걸칠 수 있다(네트워크 끊김→재연결). 그래서:
+- history 소유 = 클라(앱). 연결/재연결마다 session_init으로 게이트웨이에 시드.
+- 게이트웨이는 무상태: 받은 history로 그 연결 동안만 누적, 끊기면 버림(클라가 보관).
+- mem0 커밋 = 명시적 end_session(종료 버튼)일 때만. WS 끊김(네트워크)으론 커밋 안 함.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import time
+from collections import deque
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
-from .config import STT_FINALIZE_GRACE_MS
+from .alerts import alert
+from .auth import verify_token
+from .config import (
+    DEMO_USER_ID,
+    MAX_HISTORY_BYTES,
+    MAX_HISTORY_ITEMS,
+    MAX_TEXT_LEN,
+    MAX_TURNS_PER_MIN,
+    REQUIRE_AUTH,
+    SESSION_INIT_TIMEOUT_S,
+    STT_FINALIZE_GRACE_MS,
+)
 from .feedback import request_feedback
 from .gateway.orchestrator import run_turn
 from .memory import commit_memory, load_memory
@@ -57,8 +76,23 @@ async def _pump_stt(dg: DeepgramStream, send_json) -> str:
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
-    memory_text = await load_memory()  # 세션시작 장기기억 1회 로드(세션 내내 고정). fail-safe → ""
+    # 신원·메모리·커밋여부는 session_init에서 확정(인증 전 데모 기본). WS 연결 != 세션 시작.
+    user_id = DEMO_USER_ID       # session_init이 실제 user_id로 교체
+    memory_text = ""             # session_init에서 load_memory로 채움(세션 내내 고정)
+    committed = False            # end_session(명시 종료) 시에만 True — 네트워크 끊김과 구분
+    authed = False               # session_init 성공 전엔 어떤 턴도 처리 안 함(인증 게이트)
+    turn_times: deque[float] = deque()  # 턴 타임스탬프(분당 레이트 제한)
     send_lock = asyncio.Lock()  # 동시 send 직렬화(Starlette WS는 concurrent send 비안전)
+
+    def turn_allowed() -> bool:
+        """연결당 분당 턴 상한. 초과면 False(턴 생성 차단)."""
+        now = time.monotonic()
+        while turn_times and now - turn_times[0] > 60:
+            turn_times.popleft()
+        if len(turn_times) >= MAX_TURNS_PER_MIN:
+            return False
+        turn_times.append(now)
+        return True
 
     async def _safe_send(do_send) -> None:
         async with send_lock:
@@ -107,11 +141,14 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
     async def safe_turn(transcript: str) -> None:
         try:
-            await run_turn(send_json, send_bytes, messages, transcript, memory=memory_text)
+            await run_turn(send_json, send_bytes, messages, transcript,
+                           user_id=user_id, memory=memory_text)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            for d in ({"type": "error", "message": str(e)[:200]},
+            await alert(repr(e), context="run_turn 실패")
+            # 클라엔 일반 메시지만(예외 상세 노출 금지, A6)
+            for d in ({"type": "error", "message": "응답 생성 중 문제가 생겼어요."},
                       {"type": "status", "state": "idle"}):
                 try:
                     await send_json(d)
@@ -121,19 +158,31 @@ async def ws_endpoint(ws: WebSocket) -> None:
     async def do_feedback() -> None:
         """'교정 받기' — 현재까지의 대화로 교정 요청 후 결과 전송(블로킹 회피용 태스크)."""
         try:
-            result = await request_feedback(messages)
+            result = await request_feedback(messages, user_id)
             await send_json({"type": "feedback", "data": result})
         except Exception as e:  # noqa: BLE001
-            await send_json({"type": "feedback_error", "message": str(e)[:200]})
+            await alert(repr(e), context="feedback 실패")
+            await send_json({"type": "feedback_error", "message": "교정을 불러오지 못했어요."})
 
     try:
         while True:
-            msg = await ws.receive()
+            # 미인증 동안은 idle 타임아웃 — session_init 안 보내고 자원만 점유하는 연결 차단.
+            if not authed:
+                try:
+                    msg = await asyncio.wait_for(ws.receive(),
+                                                 timeout=SESSION_INIT_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    await send_json({"type": "error", "message": "세션 초기화 시간 초과"})
+                    break
+            else:
+                msg = await ws.receive()
             if msg["type"] == "websocket.disconnect":
                 break
 
             audio = msg.get("bytes")
             if audio is not None:
+                if not authed:
+                    continue  # 인증 전 오디오는 드롭(자원 소비 차단)
                 rx_frames += 1
                 rx_bytes += len(audio)
                 if dg:
@@ -148,10 +197,63 @@ async def ws_endpoint(ws: WebSocket) -> None:
             text = msg.get("text")
             if not text:
                 continue
-            evt = json.loads(text)
+            try:  # malformed JSON 한 건이 세션을 끊지 않도록 방어(B3)
+                evt = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                _log.warning("malformed JSON 프레임 무시")
+                continue
+            if not isinstance(evt, dict):
+                continue
             t = evt.get("type")
 
-            if t == "start":
+            # 인증 게이트: session_init 성공 전엔 어떤 턴/제어도 처리 안 함(A2).
+            if t != "session_init" and not authed:
+                await send_json({"type": "error",
+                                 "message": "세션이 초기화되지 않았습니다 (session_init 먼저)"})
+                continue
+
+            if t == "session_init":
+                # 연결/재연결 시드 — 클라가 보관한 이번 세션 history로 게이트웨이를 초기화.
+                # 재연결이면 history에 누적분이 옴 → 대화 끊김 없이 이어짐. 빈 배열이면 새 세션.
+                # 인증: 토큰 있으면 검증→user.id(실패 시 거절). 없으면 DEMO 폴백(로컬/데모).
+                # 평문 user_id는 신뢰하지 않는다(스푸핑 방지) — 신원은 토큰에서만 도출.
+                token = (evt.get("token") or "").strip()
+                if token:
+                    uid = await verify_token(token)
+                    if not uid:
+                        await send_json({"type": "auth_error",
+                                         "message": "invalid or expired token"})
+                        break  # 인증 실패 → 연결 종료(finally가 정리, 커밋 없음)
+                    user_id = uid
+                elif REQUIRE_AUTH:
+                    # 프로덕션: 토큰 없는 연결 거절(DEMO 폴백 차단).
+                    await send_json({"type": "auth_error", "message": "token required"})
+                    break
+                else:
+                    user_id = DEMO_USER_ID  # 로컬/데모만
+                # history 크기 제한(A3/A5) — 역할도 user/assistant로만 제한(B5).
+                hist = evt.get("history") or []
+                clean: list[dict] = []
+                total = 0
+                for m in hist:
+                    if not (isinstance(m, dict) and m.get("role") in ("user", "assistant")):
+                        continue
+                    content = m.get("content")
+                    if not isinstance(content, str) or not content:
+                        continue
+                    total += len(content)
+                    if len(clean) >= MAX_HISTORY_ITEMS or total > MAX_HISTORY_BYTES:
+                        _log.warning("history 상한 초과 — 절단(items=%d bytes=%d)", len(clean), total)
+                        break
+                    clean.append({"role": m["role"], "content": content})
+                messages.clear()
+                messages.extend(clean)
+                committed = False  # 재연결로 새 WS면 이전 커밋여부 리셋(아직 종료 안 함)
+                memory_text = await load_memory(user_id)  # 장기기억 1회 로드(fail-safe→"")
+                authed = True  # 이제부터 턴 처리 허용
+                await send_json({"type": "ready"})
+
+            elif t == "start":
                 await cancel_turn()  # barge-in: 진행 중 발화 중단
                 await cancel_stt()   # 직전 턴 잔여 STT 정리(중복 start 대비, None이면 no-op)
                 rx_frames = rx_bytes = dropped = 0  # 새 턴 진단 카운터 리셋
@@ -163,10 +265,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 dg = DeepgramStream()
                 try:
                     await dg.open()
-                except Exception as e:  # noqa: BLE001  # 인증/DNS/연결 실패 — 명확 로그 + 통지 후 복귀
+                except Exception as e:  # noqa: BLE001  # 인증/DNS/연결 실패 — 로그+알림 후 복귀
                     _log.exception("STT open 실패(인증/연결 확인)")
+                    await alert(repr(e), context="STT open 실패")
                     dg = None
-                    await send_json({"type": "error", "message": f"STT 연결 실패: {e}"[:200]})
+                    # 클라엔 일반 메시지만(내부 URL/예외 상세 노출 금지, A6)
+                    await send_json({"type": "error", "message": "STT 연결에 실패했어요."})
                     await send_json({"type": "status", "state": "idle"})
                     continue
                 await send_json({"type": "status", "state": "listening"})
@@ -188,9 +292,13 @@ async def ws_endpoint(ws: WebSocket) -> None:
                         transcript = ""
                         _log.exception("STT finalize 실패(연결/인증 등)")
                     await cancel_stt()  # 성공·타임아웃 양쪽에서 orphan 방지 + dg.close 일원화
-                    if transcript.strip():  # 정상 → 받은 값 로그 후 LLM 진행
-                        _log.info("STT transcript: %r", transcript)
-                        turn_task = asyncio.create_task(safe_turn(transcript))
+                    if transcript.strip():  # 정상 → 길이만 로그(원문 비기록, C3) 후 LLM 진행
+                        _log.info("STT transcript 수신(len=%d)", len(transcript))
+                        if not turn_allowed():  # 분당 턴 상한(A3)
+                            await send_json({"type": "error", "message": "잠시 후 다시 시도해 주세요."})
+                            await send_json({"type": "status", "state": "idle"})
+                        else:
+                            turn_task = asyncio.create_task(safe_turn(transcript))
                     else:  # 빈 결과 → 경고 + LLM 호출 스킵
                         _log.warning("STT 빈 결과 — LLM 호출 스킵")
 
@@ -198,9 +306,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 msg_text = (evt.get("text") or "").strip()
                 if not msg_text:
                     continue
+                if len(msg_text) > MAX_TEXT_LEN:  # 입력 크기 제한(A3/A5)
+                    await send_json({"type": "error", "message": "메시지가 너무 길어요."})
+                    continue
+                if not turn_allowed():  # 분당 턴 상한(A3)
+                    await send_json({"type": "error", "message": "잠시 후 다시 시도해 주세요."})
+                    continue
                 await cancel_turn()  # barge-in: 진행 중 응답 중단
                 await cancel_stt()   # 마이크 열려있으면 정리
-                _log.info("text_turn: %r", msg_text)
+                _log.info("text_turn 수신(len=%d)", len(msg_text))  # 원문 비기록(C3)
                 turn_task = asyncio.create_task(safe_turn(msg_text))
 
             elif t == "request_feedback":  # 연결 끊기 전 교정(논블로킹) — 종료 시 finally가 정리
@@ -208,10 +322,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     fb_task.cancel()
                 fb_task = asyncio.create_task(do_feedback())
 
+            elif t == "end_session":  # 명시적 종료(종료 버튼) — 이때만 mem0 커밋
+                # 네트워크 끊김(WS만 닫힘)과 구분되는 유일한 지점. 멱등(중복 종료 방지).
+                if not committed:
+                    committed = True
+                    await commit_memory(messages, user_id)
+                await send_json({"type": "session_committed"})
+
             elif t == "interrupt":
                 await cancel_turn()
                 await send_json({"type": "status", "state": "idle"})
     finally:
+        # WS 끊김 = 정리만. mem0 커밋은 여기서 하지 않는다 — 네트워크 끊김(의도치 않은 종료)에도
+        # finally가 돌기 때문. 커밋은 명시적 end_session에서만. 끊김이 진짜 종료면 클라가
+        # end_session을 먼저 보낸 뒤 닫으므로 그때 이미 커밋됨. history는 클라가 보관(재시드).
         await cancel_stt()   # 리스닝 중 disconnect 시 orphan stt_task 정리(근본 원인 해소)
         await cancel_turn()
         if fb_task and not fb_task.done():  # 교정 미완 상태로 끊김 → orphan httpx 정리
@@ -220,7 +344,6 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 await fb_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-        await commit_memory(messages)  # 세션종료 → transcript를 mem0에 커밋(fail-safe, 빈 세션 스킵)
 
 
 # 데모 정적 페이지 서빙(/). 라우트(/health,/ws) 정의 후 마지막에 마운트.

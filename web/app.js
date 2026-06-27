@@ -9,6 +9,9 @@ let tEnd = 0, tStt = 0, tReply = 0, tAudio = 0;
 let pendingListen = null;
 // 세션 상태머신: idle(랜딩) → active(대화) → ending(교정 대기) → ended(교정 표시·랜딩)
 let state = "idle", pendingFeedback = null, spoke = false;
+// 세션 = 시작~종료 버튼(= 사용자 의도). WS 연결과 별개라 네트워크로 끊겨도 세션은 유지.
+// history는 클라가 소유 → 재연결마다 게이트웨이에 재시드(대화 이어짐). 게이트웨이는 무상태.
+let history = [], intentionalClose = false, reconnecting = false;
 
 function setStatus(s) { $("status").textContent = s; $("status").className = s; }
 
@@ -32,7 +35,9 @@ function connect() {
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = onMessage;
-    ws.onopen = () => resolve();
+    // 소켓이 열리면 항상 먼저 시드(session_init) → 어떤 턴보다 인증/시드가 선행됨.
+    // 초기연결=빈 history, 재연결=누적 history. 이미 열린 소켓 재사용 시엔 재시드 안 함.
+    ws.onopen = () => { seedSession(); resolve(); };
     ws.onerror = () => { connectPromise = null; reject(new Error("서버 연결 실패")); };
     ws.onclose = onWsClose;
   });
@@ -41,14 +46,45 @@ function connect() {
 
 function onWsClose() {
   connectPromise = null;
+  if (intentionalClose) { intentionalClose = false; return; }  // 종료 버튼발 닫힘 → 재연결 안 함
   setStatus("disconnected");
-  if (state === "active") {                 // 예상치 못한 끊김(서버 재시작·네트워크) → 랜딩 복귀
-    state = "idle";
-    stopPlayback(); if (listening) abortListening(); finalizeLive();
-    showLanding("몰리와 대화하기");
-    $("feedback").innerHTML = '<div class="fb-empty">연결이 끊겼어요. 다시 시작해 주세요.</div>';
-  }
+  if (state === "active") reconnect();       // 네트워크 끊김 → 세션 유지한 채 재연결+history 재시드
   // ending/ended(의도적 종료)는 무시 — 교정 패널 유지
+}
+
+// 연결 직후/재연결마다 호출 — 클라가 보관한 이번 세션 history로 게이트웨이를 시드.
+// 빈 배열이면 새 세션, 누적분이면 끊겼던 대화를 이어감. 서버는 이때 load_memory.
+function seedSession() {
+  if (!ws || ws.readyState !== 1) return;
+  const msg = { type: "session_init", history };
+  if (window.MOLY_TOKEN) msg.token = window.MOLY_TOKEN;  // 로그인 붙으면 토큰 주입(없으면 DEMO)
+  ws.send(JSON.stringify(msg));
+}
+
+// 네트워크 끊김 복구 — 지수 백오프로 재연결 후 history 재시드. 세션(active) 동안만 시도.
+async function reconnect() {
+  if (reconnecting) return;
+  reconnecting = true;
+  setStatus("reconnecting");
+  stopPlayback(); if (listening) abortListening(); finalizeLive();  // 끊긴 턴 잔여 정리
+  for (let attempt = 0; attempt < 6 && state === "active"; attempt++) {
+    await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** attempt, 5000)));
+    if (state !== "active") break;            // 그 사이 종료됐으면 중단
+    try {
+      await connect();                         // onopen에서 보관한 history 재시드 → 대화 이어짐
+      if (ws && ws.readyState === 1) {
+        setStatus("connected");
+        reconnecting = false;
+        return;
+      }
+    } catch (e) { /* 다음 시도 */ }
+  }
+  reconnecting = false;
+  if (state === "active") {                    // 끝내 실패 → 랜딩 복귀
+    state = "idle";
+    showLanding("몰리와 대화하기");
+    $("feedback").innerHTML = '<div class="fb-empty">연결이 끊겨 다시 시작해 주세요.</div>';
+  }
 }
 
 // 오디오 재생 컨텍스트 확보(브라우저 정책상 user gesture 안에서 호출돼야 함).
@@ -67,13 +103,18 @@ function onMessage(ev) {
   if (m.type === "transcript") {
     if (!liveYou) liveYou = bubble("you live", "");
     liveYou.textContent = m.text;
-    if (m.final) { spoke = true; if (!tStt) tStt = performance.now(); liveYou.classList.remove("live"); liveYou = null; }
+    if (m.final) {
+      spoke = true; if (!tStt) tStt = performance.now();
+      history.push({ role: "user", content: m.text });  // 음성 사용자 발화 보관(재연결 시드용)
+      liveYou.classList.remove("live"); liveYou = null;
+    }
   } else if (m.type === "reply_delta") {
     if (!tReply) tReply = performance.now();
     replyBuf += m.text;
     if (!window._molly) window._molly = bubble("molly live", "");
     window._molly.textContent = replyBuf;
   } else if (m.type === "turn_end") {
+    if (replyBuf) history.push({ role: "assistant", content: replyBuf });  // 보관 후 클리어
     if (window._molly) window._molly.classList.remove("live");
     window._molly = null; replyBuf = "";
     showLatency();
@@ -84,6 +125,12 @@ function onMessage(ev) {
     if (pendingFeedback) { pendingFeedback.resolve(m.data); pendingFeedback = null; }
   } else if (m.type === "feedback_error") {
     if (pendingFeedback) { pendingFeedback.resolve({ __error: true }); pendingFeedback = null; }
+  } else if (m.type === "auth_error") {       // 토큰 무효/만료 → 세션 못 염, 재연결 안 함
+    intentionalClose = true;                  // onWsClose가 재연결 시도 못 하게
+    state = "idle";
+    if (listening) abortListening(); stopPlayback(); finalizeLive();
+    showLanding("몰리와 대화하기");
+    $("feedback").innerHTML = '<div class="fb-empty">로그인이 만료됐어요. 다시 로그인해 주세요.</div>';
   } else if (m.type === "error") {
     if (pendingListen) { pendingListen.reject(new Error(m.message)); pendingListen = null; }
     bubble("molly", "⚠️ " + m.message);
@@ -113,6 +160,7 @@ function resetSessionState() {
   finalizeLive();
   if (pendingListen) { try { pendingListen.reject(new Error("reset")); } catch (e) {} pendingListen = null; }
   listening = false; sending = false; pendingFeedback = null; spoke = false;
+  history = []; intentionalClose = false; reconnecting = false;  // 새 세션 = history 초기화
   tEnd = tStt = tReply = tAudio = 0; nextTime = 0;
   $("log").innerHTML = ""; $("feedback").innerHTML = "";
   setMode("chat");
@@ -124,7 +172,7 @@ async function startSession() {
   try {
     await ensureAudio();               // 이 클릭(제스처) 안에서 — 이후 TTS 재생 가능
     resetSessionState();               // 이전 세션 로그·교정·상태 초기화
-    await connect();                   // 서버: 장기기억만 로드(load_memory)
+    await connect();                   // onopen에서 빈 history 시드 → 서버가 load_memory(장기기억만)
     if (!ws || ws.readyState !== 1) throw new Error("연결 실패");
     state = "active";
     showSession();
@@ -165,7 +213,10 @@ async function endSession() {
     $("feedback").innerHTML = "";
   }
 
-  try { if (ws) ws.close(); } catch (e) {}   // 서버 finally가 메모리 커밋
+  // 명시적 종료 신호 → 서버가 이때만 mem0 커밋(네트워크 끊김과 구분). 그 뒤 닫음.
+  try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "end_session" })); } catch (e) {}
+  intentionalClose = true;                   // onWsClose가 재연결 시도 안 하도록
+  try { if (ws) ws.close(); } catch (e) {}
   state = "ended";
   showLanding("다시 대화하기");
 }
@@ -247,6 +298,7 @@ async function sendChat() {
     stopPlayback();                           // 이전 응답 말하던 중이면 끊고(barge-in)
     ws.send(JSON.stringify({ type: "text_turn", text }));
     bubble("you", text); spoke = true;
+    history.push({ role: "user", content: text });  // 채팅 사용자 발화 보관(재연결 시드용)
     $("msg").value = "";
   } catch (e) {
     bubble("molly", "⚠️ " + (e.message || e));
