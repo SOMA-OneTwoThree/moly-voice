@@ -74,7 +74,7 @@ async def _pump_stt(dg: STTStream, send_json) -> str:
         _log.warning("STT pump error: %r", e)  # 연결 종료/프로토콜/인증 등 원인 타입 노출
     transcript = " ".join(finals).strip() or last_interim.strip()
     if transcript:  # 빈 transcript는 클라이언트로 보내지 않음(불필요 final 이벤트/잠재 크래시점 제거)
-        await send_json({"type": "transcript", "text": transcript, "final": True})
+        await send_json({"type": "transcript", "text": transcript, "final": True, "result": "recognized"})
     return transcript
 
 
