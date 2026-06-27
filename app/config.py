@@ -32,5 +32,28 @@ MEMORY_COMMIT_URL = env("MEMORY_COMMIT_URL", f"{_LLM_BASE}/memory/commit")
 # 교정 — '교정 받기' 시 게이트웨이가 호출(브라우저는 moly-llm 직접 접근 불가).
 FEEDBACK_URL = env("FEEDBACK_URL", f"{_LLM_BASE}/feedback")
 
-# 데모 고정 user_id(인증 전). Mem0 장기기억이 이 id로 쌓인다.
+# 데모 고정 user_id(인증 전/토큰 없을 때 폴백). Mem0 장기기억이 이 id로 쌓인다.
 DEMO_USER_ID = env("DEMO_USER_ID", "molly_voice_demo")
+
+# WS 인증 — Supabase access token 검증용(server require-user.ts와 동일: remote getUser).
+# 둘 다 공개값(anon 키는 브라우저에도 실림). server와 같은 값이어야 함.
+SUPABASE_URL = env("SUPABASE_URL")
+SUPABASE_ANON_KEY = env("SUPABASE_ANON_KEY")
+
+# 인증 강제 토글. true면 유효 토큰 없는 연결 거절(프로덕션). false면 DEMO 폴백 허용(로컬/데모).
+# 프론트 로그인 붙어 토큰 전송 시작하면 프로덕션 env에서 true로 켠다.
+REQUIRE_AUTH = env("REQUIRE_AUTH", "false").lower() in ("1", "true", "yes")
+
+# 남용 방어(연결당). per-IP/전역 연결 cap은 앞단 프록시(ALB/nginx) 영역.
+SESSION_INIT_TIMEOUT_S = float(env("SESSION_INIT_TIMEOUT_S", "10") or "10")  # 미인증 idle 끊기
+MAX_TEXT_LEN = int(env("MAX_TEXT_LEN", "4000") or "4000")                    # text_turn 1건 상한
+MAX_HISTORY_ITEMS = int(env("MAX_HISTORY_ITEMS", "200") or "200")           # session_init history 항목수
+MAX_HISTORY_BYTES = int(env("MAX_HISTORY_BYTES", "200000") or "200000")     # history 총 바이트
+MAX_TURNS_PER_MIN = int(env("MAX_TURNS_PER_MIN", "30") or "30")             # 연결당 분당 턴
+
+# moly-llm 내부 호출 보호용 공유 시크릿(심층방어). 양 레포 동일값(Parameter Store).
+# 비어있으면 미적용(로컬). moly-llm도 설정돼 있을 때만 강제 → 깔끔한 seam.
+INTERNAL_SERVICE_TOKEN = env("INTERNAL_SERVICE_TOKEN")
+
+# 에러 알림 — Slack Incoming Webhook URL. 비어있으면 알림 끔(no-op, 로컬 안전).
+SLACK_WEBHOOK_URL = env("SLACK_WEBHOOK_URL")

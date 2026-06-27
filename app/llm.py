@@ -10,6 +10,7 @@ from typing import AsyncIterator
 
 import httpx
 
+from .alerts import internal_headers
 from .config import LLM_URL
 
 
@@ -24,7 +25,8 @@ async def stream_reply(
         body["memory"] = memory
     buf = ""
     async with httpx.AsyncClient(timeout=60.0) as client:
-        async with client.stream("POST", LLM_URL, json=body) as r:
+        async with client.stream("POST", LLM_URL, json=body,
+                                 headers=internal_headers()) as r:
             if r.status_code != 200:
                 await r.aread()
                 raise RuntimeError(f"LLM {r.status_code}: {r.text[:200]}")

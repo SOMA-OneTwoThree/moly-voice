@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import httpx
 
+from .alerts import internal_headers
 from .config import DEMO_USER_ID, FEEDBACK_URL
 
 
@@ -20,6 +21,7 @@ async def request_feedback(messages: list[dict], user_id: str = DEMO_USER_ID) ->
         return {"has_corrections": False, "corrections": []}
 
     async with httpx.AsyncClient(timeout=30.0) as client:  # 교정은 비스트리밍 1회(수 초)
-        r = await client.post(FEEDBACK_URL, json={"user_id": user_id, "messages": convo})
+        r = await client.post(FEEDBACK_URL, json={"user_id": user_id, "messages": convo},
+                              headers=internal_headers())
         r.raise_for_status()
         return r.json()

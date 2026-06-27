@@ -1,0 +1,240 @@
+"""세션 생애주기 WS 프로토콜 검증 (외부 의존 mock).
+
+핵심 계약:
+1. session_init → 클라 history로 messages 시드 + load_memory(user_id) + "ready"
+2. end_session(명시 종료) 일 때만 commit_memory 1회
+3. 네트워크 끊김(end_session 없이 WS만 닫힘) → commit_memory 호출 안 함
+4. 재연결 = 새 WS + session_init(누적 history) → messages 재시드(대화 이어짐)
+5. 멱등: end_session 두 번 → commit 한 번
+
+실 LLM/STT/TTS/mem0 호출 없이 게이트웨이 제어흐름만 검증한다.
+"""
+import os
+import sys
+from pathlib import Path
+
+# config import 전 더미 환경(키 없어도 모듈 로드되게)
+os.environ.setdefault("DEEPGRAM_API_KEY", "x")
+os.environ.setdefault("ELEVENLABS_API_KEY", "x")
+os.environ.setdefault("ANTHROPIC_API_KEY", "x")
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from starlette.testclient import TestClient  # noqa: E402
+
+from app import main  # noqa: E402
+
+# ── 외부 의존 mock + 호출 기록 ──
+load_calls: list[str] = []
+commit_calls: list[dict] = []
+run_calls: list[dict] = []
+
+
+async def fake_load_memory(user_id="molly_voice_demo"):
+    load_calls.append(user_id)
+    return f"MEM:{user_id}"
+
+
+async def fake_commit_memory(messages, user_id="molly_voice_demo"):
+    commit_calls.append({"user_id": user_id, "messages": [dict(m) for m in messages]})
+
+
+async def fake_request_feedback(messages, user_id="molly_voice_demo"):
+    return {"has_corrections": False, "corrections": []}
+
+
+_TOKENS = {"tok-u1": "u1", "tok-u2": "u2"}  # 유효 토큰→user.id, 그 외=무효
+
+
+async def fake_verify_token(token):
+    return _TOKENS.get(token)  # 무효면 None(거절)
+
+
+async def fake_run_turn(send_json, send_bytes, messages, transcript,
+                        user_id="molly_voice_demo", memory=""):
+    # 실 run_turn과 동일하게 messages를 in-place 갱신 + 이벤트 송신
+    run_calls.append({
+        "transcript": transcript, "user_id": user_id, "memory": memory,
+        "history_in": [dict(m) for m in messages],  # 진입 시점(시드 확인용)
+    })
+    messages.append({"role": "user", "content": transcript})
+    await send_json({"type": "reply_delta", "text": "ok"})
+    messages.append({"role": "assistant", "content": f"reply:{transcript}"})
+    await send_json({"type": "turn_end"})
+
+
+main.load_memory = fake_load_memory
+main.commit_memory = fake_commit_memory
+main.request_feedback = fake_request_feedback
+main.run_turn = fake_run_turn
+main.verify_token = fake_verify_token
+
+
+def _drain_turn(ws):
+    """text_turn 후 reply_delta + turn_end 소비."""
+    assert ws.receive_json()["type"] == "reply_delta"
+    assert ws.receive_json()["type"] == "turn_end"
+
+
+def run():
+    client = TestClient(main.app)
+    results = []
+
+    def check(name, cond):
+        results.append((name, cond))
+        print(f"  {'PASS' if cond else 'FAIL'}  {name}")
+
+    # ── 1) session_init 시드 + ready + load_memory(user_id) ──
+    load_calls.clear(); commit_calls.clear(); run_calls.clear()
+    with client.websocket_connect("/ws") as ws:
+        seed = [{"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"}]
+        ws.send_json({"type": "session_init", "token": "tok-u1", "history": seed})
+        check("1a session_init(토큰)→ready", ws.receive_json() == {"type": "ready"})
+        check("1b 토큰→user.id 도출 load_memory(u1)", load_calls == ["u1"])
+
+        ws.send_json({"type": "text_turn", "text": "how are you"})
+        _drain_turn(ws)
+        check("1c run_turn이 시드 history 봄(2건)",
+              run_calls[-1]["history_in"] == seed)
+        check("1d run_turn user_id 전달", run_calls[-1]["user_id"] == "u1")
+        check("1e run_turn memory 전달", run_calls[-1]["memory"] == "MEM:u1")
+
+        # ── 2) end_session → commit 1회(시드2 + 이번턴 user/assistant = 4) ──
+        ws.send_json({"type": "end_session"})
+        check("2a session_committed", ws.receive_json() == {"type": "session_committed"})
+        check("2b commit 1회", len(commit_calls) == 1)
+        check("2c commit에 전체 4건", len(commit_calls[0]["messages"]) == 4)
+        check("2d commit user_id=u1", commit_calls[0]["user_id"] == "u1")
+
+    # ── 3) 네트워크 끊김: end_session 없이 닫힘 → commit 호출 없어야 ──
+    load_calls.clear(); commit_calls.clear(); run_calls.clear()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "session_init", "history": []})
+        ws.receive_json()  # ready
+        ws.send_json({"type": "text_turn", "text": "mid sentence"})
+        _drain_turn(ws)
+        # end_session 안 보내고 컨텍스트 종료 = 소켓만 끊김(네트워크 드롭)
+    check("3a 끊김엔 commit 안 함", len(commit_calls) == 0)
+
+    # ── 4) 재연결: 누적 history로 session_init → 재시드(이어감) ──
+    load_calls.clear(); commit_calls.clear(); run_calls.clear()
+    accumulated = [
+        {"role": "user", "content": "a"}, {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"}, {"role": "assistant", "content": "d"},
+    ]
+    with client.websocket_connect("/ws") as ws:  # 새 WS = 재연결
+        ws.send_json({"type": "session_init", "token": "tok-u2", "history": accumulated})
+        ws.receive_json()  # ready
+        ws.send_json({"type": "text_turn", "text": "continue"})
+        _drain_turn(ws)
+        check("4a 재연결 후 run_turn이 누적 4건 봄",
+              run_calls[-1]["history_in"] == accumulated)
+        ws.send_json({"type": "end_session"})
+        ws.receive_json()
+        check("4b 이어진 세션 commit 6건",
+              len(commit_calls[0]["messages"]) == 6)
+
+    # ── 5) 멱등: end_session 두 번 → commit 한 번 ──
+    load_calls.clear(); commit_calls.clear(); run_calls.clear()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "session_init", "history": []})
+        ws.receive_json()
+        ws.send_json({"type": "text_turn", "text": "x"})
+        _drain_turn(ws)
+        ws.send_json({"type": "end_session"}); ws.receive_json()
+        ws.send_json({"type": "end_session"}); ws.receive_json()
+    check("5 중복 end_session→commit 1회", len(commit_calls) == 1)
+
+    # ── 6) 무효 토큰 → auth_error + 연결 거절(ready 안 옴) ──
+    load_calls.clear(); commit_calls.clear()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "session_init", "token": "bad", "history": []})
+        msg = ws.receive_json()
+        check("6a 무효 토큰→auth_error", msg.get("type") == "auth_error")
+    check("6b 무효 토큰 거절(load 안 함)", load_calls == [])
+
+    # ── 7) 토큰 없음(데모/로컬) → DEMO_USER_ID 폴백 ──
+    load_calls.clear()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "session_init", "history": []})  # 토큰 생략
+        check("7a 토큰 없음→ready", ws.receive_json() == {"type": "ready"})
+        check("7b DEMO_USER_ID 폴백", load_calls == [main.DEMO_USER_ID])
+
+    # ── 8) 인증 게이트(A2): session_init 전 text_turn → 거절, 턴 생성 안 함 ──
+    run_calls.clear()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "text_turn", "text": "hi"})  # session_init 없이
+        msg = ws.receive_json()
+        check("8a 미인증 턴 거절", msg.get("type") == "error")
+        check("8b 미인증 run_turn 안 함", run_calls == [])
+
+    # ── 9) REQUIRE_AUTH=true + 토큰 없음 → 거절 ──
+    main.REQUIRE_AUTH = True
+    load_calls.clear()
+    try:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "session_init", "history": []})  # 토큰 없음
+            check("9 REQUIRE_AUTH=true 토큰없음→auth_error",
+                  ws.receive_json().get("type") == "auth_error")
+        check("9b 거절 시 load 안 함", load_calls == [])
+    finally:
+        main.REQUIRE_AUTH = False
+
+    # ── 10) 입력 크기(A3): text_turn 길이 초과 → 거절 ──
+    main.MAX_TEXT_LEN = 5
+    run_calls.clear()
+    try:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "session_init", "history": []})
+            ws.receive_json()
+            ws.send_json({"type": "text_turn", "text": "이건너무길다"})
+            check("10a 긴 text_turn 거절", ws.receive_json().get("type") == "error")
+            check("10b 거절 시 run_turn 안 함", run_calls == [])
+    finally:
+        main.MAX_TEXT_LEN = 4000
+
+    # ── 11) history 상한(A3): 항목수 초과 → 절단 ──
+    main.MAX_HISTORY_ITEMS = 2
+    run_calls.clear()
+    try:
+        big = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+               for i in range(6)]
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "session_init", "history": big})
+            ws.receive_json()
+            ws.send_json({"type": "text_turn", "text": "x"})
+            _drain_turn(ws)
+            check("11 history 2건으로 절단", len(run_calls[-1]["history_in"]) == 2)
+    finally:
+        main.MAX_HISTORY_ITEMS = 200
+
+    # ── 12) 턴 레이트(A3): 분당 상한 초과 → 거절 ──
+    main.MAX_TURNS_PER_MIN = 2
+    try:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "session_init", "history": []})
+            ws.receive_json()
+            for _ in range(2):
+                ws.send_json({"type": "text_turn", "text": "hi"})
+                _drain_turn(ws)
+            ws.send_json({"type": "text_turn", "text": "hi"})  # 3번째 = 초과
+            check("12 턴 레이트 초과 거절", ws.receive_json().get("type") == "error")
+    finally:
+        main.MAX_TURNS_PER_MIN = 30
+
+    # ── 13) malformed JSON(B3): 무시하고 연결 유지 ──
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text("this is not json {{{")  # 깨진 프레임
+        ws.send_json({"type": "session_init", "history": []})  # 그 다음 정상
+        check("13 깨진 JSON 무시 후 정상 동작", ws.receive_json() == {"type": "ready"})
+
+    print()
+    passed = sum(1 for _, c in results if c)
+    print(f"=== {passed}/{len(results)} PASS ===")
+    return passed == len(results)
+
+
+if __name__ == "__main__":
+    sys.exit(0 if run() else 1)
