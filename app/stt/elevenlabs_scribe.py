@@ -39,6 +39,8 @@ _ERROR_TYPES = {
 class ElevenLabsScribeStream:
     """한 발화(턴) 동안 열리는 Scribe v2 Realtime 스트림."""
 
+    name = "elevenlabs"  # 측정·로그 라벨
+
     def __init__(self) -> None:
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._sent_chunks = 0

@@ -13,6 +13,8 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 class STTStream(Protocol):
     """한 턴 동안 열리는 STT 스트림."""
 
+    name: str  # provider 식별자(로그·A/B 측정 라벨)
+
     async def open(self) -> None:
         """provider WS 연결 + 세션 시작."""
         ...

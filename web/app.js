@@ -6,6 +6,7 @@ let ws, inCtx, micNode, micSource, micStream, outCtx;
 let nextTime = 0, sources = [];
 let listening = false, replyBuf = "", liveYou = null, mode = "chat", sending = false;
 let tEnd = 0, tStt = 0, tReply = 0, tAudio = 0;
+let sttProvider = "";  // 서버가 ready에 통지(측정 라벨)
 let pendingListen = null;
 // 세션 상태머신: idle(랜딩) → active(대화) → ending(교정 대기) → ended(교정 표시·랜딩)
 let state = "idle", pendingFeedback = null, spoke = false;
@@ -125,6 +126,8 @@ function onMessage(ev) {
     if (pendingFeedback) { pendingFeedback.resolve(m.data); pendingFeedback = null; }
   } else if (m.type === "feedback_error") {
     if (pendingFeedback) { pendingFeedback.resolve({ __error: true }); pendingFeedback = null; }
+  } else if (m.type === "ready") {            // 서버가 활성 STT provider 통지(측정 라벨)
+    sttProvider = m.provider || "";
   } else if (m.type === "auth_error") {       // 토큰 무효/만료 → 세션 못 염, 재연결 안 함
     intentionalClose = true;                  // onWsClose가 재연결 시도 못 하게
     state = "idle";
@@ -259,9 +262,10 @@ function showLatency() {
   const parts = [`체감 ${total}ms`];
   if (stt != null) parts.push(`STT ${stt}`);
   if (llm != null) parts.push(`LLM ${llm}`);
+  const tag = sttProvider ? `[${sttProvider}] ` : "";  // A/B provider 라벨
   const d = document.createElement("div");
   d.className = "latency";
-  d.textContent = "⏱ " + parts.join(" · ");
+  d.textContent = "⏱ " + tag + parts.join(" · ");
   $("log").appendChild(d);
   $("log").scrollTop = $("log").scrollHeight;
 }

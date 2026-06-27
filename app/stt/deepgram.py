@@ -23,6 +23,8 @@ _URL = "wss://api.deepgram.com/v1/listen"
 class DeepgramStream:
     """한 발화(턴) 동안 열리는 Deepgram 스트림."""
 
+    name = "deepgram"  # 측정·로그 라벨
+
     def __init__(self, model: str = "nova-3") -> None:
         self.model = model
         self._ws: websockets.WebSocketClientProtocol | None = None
