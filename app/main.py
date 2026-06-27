@@ -65,7 +65,7 @@ async def _pump_stt(dg: STTStream, send_json) -> str:
                 finals.append(txt)
             else:
                 last_interim = txt
-                await send_json({"type": "transcript", "text": txt, "final": False})
+                await send_json({"type": "transcript", "text": " ".join([*finals, current_interim]).strip(), "final": False})
     except Exception as e:  # noqa: BLE001  (CancelledError는 BaseException → orphan cancel은 통과)
         _log.warning("STT pump error: %r", e)  # 연결 종료/프로토콜/인증 등 원인 타입 노출
     transcript = " ".join(finals).strip() or last_interim.strip()
