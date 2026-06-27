@@ -45,6 +45,12 @@ def run():
     from app.config import STT_LANGUAGE
     check("STT_LANGUAGE 기본 en", STT_LANGUAGE == "en")
 
+    # provider 라벨(측정용)
+    check("DeepgramStream.name=deepgram", s.name == "deepgram")
+    from app.stt.elevenlabs_scribe import ElevenLabsScribeStream
+    check("ElevenLabsScribeStream.name=elevenlabs",
+          ElevenLabsScribeStream().name == "elevenlabs")
+
     print()
     passed = sum(1 for _, c in results if c)
     print(f"=== {passed}/{len(results)} PASS ===")

@@ -35,6 +35,7 @@ from .config import (
     REQUIRE_AUTH,
     SESSION_INIT_TIMEOUT_S,
     STT_FINALIZE_GRACE_MS,
+    STT_PROVIDER,
 )
 from .feedback import request_feedback
 from .gateway.orchestrator import run_turn
@@ -255,7 +256,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 committed = False  # 재연결로 새 WS면 이전 커밋여부 리셋(아직 종료 안 함)
                 memory_text = await load_memory(user_id)  # 장기기억 1회 로드(fail-safe→"")
                 authed = True  # 이제부터 턴 처리 허용
-                await send_json({"type": "ready"})
+                await send_json({"type": "ready", "provider": STT_PROVIDER})  # 클라 측정 라벨
 
             elif t == "start":
                 await cancel_turn()  # barge-in: 진행 중 발화 중단
@@ -284,6 +285,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 _log.info("RX audio: frames=%d bytes=%d dropped(before dg)=%d",
                           rx_frames, rx_bytes, dropped)
                 if dg and stt_task:
+                    provider = getattr(dg, "name", STT_PROVIDER)
+                    t_fin = time.monotonic()  # A/B 측정: finalize→최종 transcript
                     await dg.finalize()
                     try:  # grace: 최종 transcript가 그 안에 오면 즉시 진행
                         transcript = await asyncio.wait_for(
@@ -295,9 +298,11 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     except Exception:  # noqa: BLE001  # 그 외 = 연결/인증 등 — 전체 트레이스백 노출
                         transcript = ""
                         _log.exception("STT finalize 실패(연결/인증 등)")
+                    stt_ms = int((time.monotonic() - t_fin) * 1000)  # STT꼬리(A/B 핵심지표)
                     await cancel_stt()  # 성공·타임아웃 양쪽에서 orphan 방지 + dg.close 일원화
                     if transcript.strip():  # 정상 → 길이만 로그(원문 비기록, C3) 후 LLM 진행
-                        _log.info("STT transcript 수신(len=%d)", len(transcript))
+                        _log.info("STT[%s] finalize→final %dms (len=%d)",
+                                  provider, stt_ms, len(transcript))
                         if not turn_allowed():  # 분당 턴 상한(A3)
                             await send_json({"type": "error", "message": "잠시 후 다시 시도해 주세요."})
                             await send_json({"type": "status", "state": "idle"})

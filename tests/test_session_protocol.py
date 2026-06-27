@@ -91,7 +91,9 @@ def run():
         seed = [{"role": "user", "content": "hi"},
                 {"role": "assistant", "content": "hello"}]
         ws.send_json({"type": "session_init", "token": "tok-u1", "history": seed})
-        check("1a session_init(토큰)→ready", ws.receive_json() == {"type": "ready"})
+        ready = ws.receive_json()
+        check("1a session_init(토큰)→ready", ready.get("type") == "ready")
+        check("1a' ready에 provider 라벨", "provider" in ready)
         check("1b 토큰→user.id 도출 load_memory(u1)", load_calls == ["u1"])
 
         ws.send_json({"type": "text_turn", "text": "how are you"})
@@ -159,7 +161,7 @@ def run():
     load_calls.clear()
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "session_init", "history": []})  # 토큰 생략
-        check("7a 토큰 없음→ready", ws.receive_json() == {"type": "ready"})
+        check("7a 토큰 없음→ready", ws.receive_json().get("type") == "ready")
         check("7b DEMO_USER_ID 폴백", load_calls == [main.DEMO_USER_ID])
 
     # ── 8) 인증 게이트(A2): session_init 전 text_turn → 거절, 턴 생성 안 함 ──
@@ -228,7 +230,7 @@ def run():
     with client.websocket_connect("/ws") as ws:
         ws.send_text("this is not json {{{")  # 깨진 프레임
         ws.send_json({"type": "session_init", "history": []})  # 그 다음 정상
-        check("13 깨진 JSON 무시 후 정상 동작", ws.receive_json() == {"type": "ready"})
+        check("13 깨진 JSON 무시 후 정상 동작", ws.receive_json().get("type") == "ready")
 
     print()
     passed = sum(1 for _, c in results if c)
