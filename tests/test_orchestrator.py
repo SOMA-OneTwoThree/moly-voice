@@ -114,6 +114,24 @@ def run():
           messages == [{"role": "user", "content": "hello"},
                        {"role": "assistant", "content": "Hi!"}])
 
+    # ── 5) 선발화 PASSIVE 제외: ACTIVE 블록만 LLM에 전달(코드 가드) ──
+    captured.clear()
+    orchestrator.stream_reply = fake_stream_factory(["Hi."])
+    events, audio, sj, sb = collect()
+    mem = ("[Recent — you may bring these up naturally]\n- today: 시험 끝남\n\n"
+           "[Background — do not bring up first; use only if relevant]\n- 부산 출신")
+    asyncio.run(orchestrator.run_greeting_turn(sj, sb, [], user_id="u1", memory=mem))
+    sent_mem = captured["memory"]
+    check("5a 선발화에 ACTIVE 포함", "today: 시험 끝남" in sent_mem)
+    check("5b 선발화에 PASSIVE(Background) 제외", "부산" not in sent_mem and "Background" not in sent_mem)
+
+    # ── 6) Background 헤더 없으면 원본 그대로(안전쪽) ──
+    captured.clear()
+    orchestrator.stream_reply = fake_stream_factory(["Hi."])
+    events, audio, sj, sb = collect()
+    asyncio.run(orchestrator.run_greeting_turn(sj, sb, [], user_id="u1", memory="MEM:u1"))
+    check("6 헤더 없으면 원본 유지", captured["memory"] == "MEM:u1")
+
     print()
     passed = sum(1 for _, c in results if c)
     print(f"=== {passed}/{len(results)} PASS ===")
