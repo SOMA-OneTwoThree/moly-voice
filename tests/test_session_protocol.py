@@ -172,15 +172,18 @@ def run():
         check("8a 미인증 턴 거절", msg.get("type") == "error")
         check("8b 미인증 run_turn 안 함", run_calls == [])
 
-    # ── 9) REQUIRE_AUTH=true + 토큰 없음 → 거절 ──
+    # ── 9) REQUIRE_AUTH=true + 헤더/토큰 없음 → 연결 자체 거부(accept 전) ──
     main.REQUIRE_AUTH = True
     load_calls.clear()
     try:
-        with client.websocket_connect("/ws") as ws:
-            ws.send_json({"type": "session_init", "history": []})  # 토큰 없음
-            check("9 REQUIRE_AUTH=true 토큰없음→auth_error",
-                  ws.receive_json().get("type") == "auth_error")
-        check("9b 거절 시 load 안 함", load_calls == [])
+        rejected = False
+        try:
+            with client.websocket_connect("/ws") as ws:  # 헤더 없음 → 핸드셰이크 거부
+                ws.receive_json()
+        except Exception:
+            rejected = True
+        check("9 REQUIRE_AUTH=true 미인증→연결 거부", rejected)
+        check("9b 거부 시 load 안 함", load_calls == [])
     finally:
         main.REQUIRE_AUTH = False
 
@@ -231,6 +234,40 @@ def run():
         ws.send_text("this is not json {{{")  # 깨진 프레임
         ws.send_json({"type": "session_init", "history": []})  # 그 다음 정상
         check("13 깨진 JSON 무시 후 정상 동작", ws.receive_json().get("type") == "ready")
+
+    # ── 14) 헤더 인증(iOS): Authorization Bearer 유효 → user_id 헤더에서, session_init 토큰 없이 ──
+    load_calls.clear()
+    with client.websocket_connect("/ws", headers={"Authorization": "Bearer tok-u1"}) as ws:
+        ws.send_json({"type": "session_init", "history": []})  # 토큰 없음(iOS처럼)
+        check("14a 헤더 인증→ready", ws.receive_json().get("type") == "ready")
+        check("14b 헤더 user_id로 load(u1)", load_calls == ["u1"])
+
+    # ── 15) 헤더 유효 + session_init에 다른 토큰 → 헤더 우선(session_init 토큰 무시) ──
+    load_calls.clear()
+    with client.websocket_connect("/ws", headers={"Authorization": "Bearer tok-u1"}) as ws:
+        ws.send_json({"type": "session_init", "token": "tok-u2", "history": []})
+        ws.receive_json()
+        check("15 헤더 우선(session_init 토큰 무시)", load_calls == ["u1"])
+
+    # ── 16) REQUIRE_AUTH=true + 헤더 무효 → 연결 거부 ──
+    main.REQUIRE_AUTH = True
+    load_calls.clear()
+    try:
+        rejected = False
+        try:
+            with client.websocket_connect("/ws", headers={"Authorization": "Bearer bad"}) as ws:
+                ws.receive_json()
+        except Exception:
+            rejected = True
+        check("16 REQUIRE_AUTH+무효 헤더→거부", rejected)
+
+        # ── 17) REQUIRE_AUTH=true + 헤더 유효 → 연결됨 ──
+        with client.websocket_connect("/ws", headers={"Authorization": "Bearer tok-u1"}) as ws:
+            ws.send_json({"type": "session_init", "history": []})
+            check("17 REQUIRE_AUTH+유효 헤더→ready", ws.receive_json().get("type") == "ready")
+            check("17b 헤더 user_id로 load(u1)", load_calls == ["u1"])
+    finally:
+        main.REQUIRE_AUTH = False
 
     print()
     passed = sum(1 for _, c in results if c)
