@@ -305,28 +305,40 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     provider = getattr(dg, "name", STT_PROVIDER)
                     t_fin = time.monotonic()  # A/B 측정: finalize→최종 transcript
                     await dg.finalize()
+                    # 결과 판정: recognized(정상) / no_speech(빈값) / timeout / stt_error.
+                    # 모든 경우 최종 이벤트를 정확히 한 번 + turn_end + idle 보장(클라 멈춤 방지).
+                    result = "recognized"
                     try:  # grace: 최종 transcript가 그 안에 오면 즉시 진행
                         transcript = await asyncio.wait_for(
                             stt_task, timeout=STT_FINALIZE_GRACE_MS / 1000)
+                        if not transcript.strip():
+                            result = "no_speech"
                     except asyncio.TimeoutError:  # 타임아웃 = 지연/네트워크
                         transcript = ""
+                        result = "timeout"
                         _log.warning("STT grace timeout: %dms 내 finalize 미도착(지연/네트워크 의심)",
                                      STT_FINALIZE_GRACE_MS)
                     except Exception:  # noqa: BLE001  # 그 외 = 연결/인증 등 — 전체 트레이스백 노출
                         transcript = ""
+                        result = "stt_error"
                         _log.exception("STT finalize 실패(연결/인증 등)")
                     stt_ms = int((time.monotonic() - t_fin) * 1000)  # STT꼬리(A/B 핵심지표)
                     await cancel_stt()  # 성공·타임아웃 양쪽에서 orphan 방지 + dg.close 일원화
-                    if transcript.strip():  # 정상 → 길이만 로그(원문 비기록, C3) 후 LLM 진행
+                    if result == "recognized":  # 길이만 로그(원문 비기록, C3) 후 LLM 진행
                         _log.info("STT[%s] finalize→final %dms (len=%d)",
                                   provider, stt_ms, len(transcript))
+                        # 최종 transcript(recognized)는 _pump_stt가 이미 전송함.
                         if not turn_allowed():  # 분당 턴 상한(A3)
                             await send_json({"type": "error", "message": "잠시 후 다시 시도해 주세요."})
                             await send_json({"type": "status", "state": "idle"})
                         else:
-                            turn_task = asyncio.create_task(safe_turn(transcript))
-                    else:  # 빈 결과 → 경고 + LLM 호출 스킵
-                        _log.warning("STT 빈 결과 — LLM 호출 스킵")
+                            turn_task = asyncio.create_task(safe_turn(transcript))  # run_turn이 turn_end+idle
+                    else:  # no_speech/timeout/stt_error — AI 응답 없이 턴 종료(클라 idle 복귀)
+                        _log.info("STT[%s] %s %dms", provider, result, stt_ms)
+                        await send_json({"type": "transcript", "text": "",
+                                         "final": True, "result": result})
+                        await send_json({"type": "turn_end"})
+                        await send_json({"type": "status", "state": "idle"})
 
             elif t == "text_turn":  # 채팅 입력 — STT 건너뛰고 텍스트를 바로 턴으로
                 msg_text = (evt.get("text") or "").strip()
