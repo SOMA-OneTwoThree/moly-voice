@@ -96,6 +96,7 @@ uvicorn app.main:app --port 8001
 | `LLM_URL` | ② moly-llm 루트(`.../chat`) — memory/feedback URL 파생 |
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` | WS 토큰 검증 |
 | `REQUIRE_AUTH` | `true`=토큰 필수(프로덕션), `false`=DEMO 폴백(로컬) |
+| `GREETING_ENABLED` | `true`(기본)=새 세션에서 Moly가 먼저 인사(선발화), `false`=끔 |
 | `INTERNAL_SERVICE_TOKEN` | moly-llm 내부 호출 보호(양 레포 동일값) |
 | `SLACK_WEBHOOK_URL` | 에러 알림(없으면 off) |
 | `MAX_TEXT_LEN` / `MAX_HISTORY_ITEMS` / `MAX_HISTORY_BYTES` / `MAX_TURNS_PER_MIN` / `SESSION_INIT_TIMEOUT_S` | 남용 방어 노브 |

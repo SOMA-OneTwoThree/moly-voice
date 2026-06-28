@@ -28,6 +28,7 @@ from .alerts import alert
 from .auth import verify_token
 from .config import (
     DEMO_USER_ID,
+    GREETING_ENABLED,
     MAX_HISTORY_BYTES,
     MAX_HISTORY_ITEMS,
     MAX_TEXT_LEN,
@@ -38,7 +39,7 @@ from .config import (
     STT_PROVIDER,
 )
 from .feedback import request_feedback
-from .gateway.orchestrator import run_turn
+from .gateway.orchestrator import run_greeting_turn, run_turn
 from .memory import commit_memory, load_memory
 from .profile import fetch_nickname
 from .stt.base import STTStream
@@ -184,6 +185,21 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 except Exception:  # noqa: BLE001
                     pass
 
+    async def safe_greeting() -> None:
+        """선발화(Moly 먼저 인사) — turn_task로 돌려 barge-in(start/text_turn)에 취소됨."""
+        try:
+            await run_greeting_turn(send_json, send_bytes, messages,
+                                    user_id=user_id, memory=memory_text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # 인사 실패는 에러버블 대신 조용히 idle 복귀(첫인상 보호). 유저가 말 걸면 정상 진행.
+            await alert(repr(e), context="run_greeting_turn 실패")
+            try:
+                await send_json({"type": "status", "state": "idle"})
+            except Exception:  # noqa: BLE001
+                pass
+
     async def do_feedback() -> None:
         """'교정 받기' — 현재까지의 대화로 교정 요청 후 결과 전송(블로킹 회피용 태스크)."""
         try:
@@ -287,6 +303,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     memory_text = f"{memory_text}\n\n[사용자 정보]\n이름: {nickname}".strip()
                 authed = True  # 이제부터 턴 처리 허용
                 await send_json({"type": "ready", "provider": STT_PROVIDER})  # 클라 측정 라벨
+                # 선발화: 새 세션(빈 history)이면 Moly가 먼저 인사. 재연결(누적 history)엔 안 함.
+                # turn_task로 두어 유저가 곧장 말 걸면(start/text_turn) cancel_turn으로 중단된다.
+                if GREETING_ENABLED and not messages:
+                    turn_task = asyncio.create_task(safe_greeting())
 
             elif t == "start":
                 await cancel_turn()  # barge-in: 진행 중 발화 중단

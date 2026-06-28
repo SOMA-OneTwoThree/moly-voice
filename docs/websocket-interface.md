@@ -189,6 +189,22 @@ STT를 거치지 않고 텍스트 턴을 시작한다. 서버는 `idle`에서만
 WebSocket 연결 직후 서버가 초기 `idle`을 보내지는 않는다. 클라이언트는 `ready`를 받은 뒤
 턴을 시작한다.
 
+#### 선발화(서버가 먼저 말 거는 인사 턴)
+
+서버 설정 `GREETING_ENABLED`(기본 켜짐)에서 **새 세션**(즉 `session_init.history`가 비어
+있을 때)이면, 서버는 `ready` 직후 사용자 입력을 기다리지 않고 **Moly가 먼저 인사하는 턴**을
+자동으로 연다. 클라이언트가 보내는 일반 턴과 **이벤트 형식이 완전히 동일**하다:
+
+```
+ready → status(thinking) → status(speaking) → reply_delta×N + binary audio → turn_end → status(idle)
+```
+
+- 클라이언트는 별도 처리 없이 평소 턴과 같게 렌더링/재생하면 된다(인사용 새 이벤트 타입 없음).
+- `transcript`는 오지 않는다(사용자 발화가 아니므로). 인사 텍스트는 `reply_delta`로만 온다.
+- **재연결**(누적 `history`가 실린 `session_init`)에서는 발동하지 않는다 — 중복 인사 방지.
+- 클라이언트가 인사 도중 `start`/`text_turn`을 보내면(끼어들기) 서버는 진행 중인 인사 턴을
+  취소한다(barge-in). 이 경우 `turn_end` 없이 `status/idle`만 올 수 있다(`interrupt`와 동일 규칙).
+
 ### `status`
 
 ```json

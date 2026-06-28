@@ -47,6 +47,10 @@ SUPABASE_ANON_KEY = env("SUPABASE_ANON_KEY")
 # 프론트 로그인 붙어 토큰 전송 시작하면 프로덕션 env에서 true로 켠다.
 REQUIRE_AUTH = env("REQUIRE_AUTH", "false").lower() in ("1", "true", "yes")
 
+# 선발화 토글. true(기본)면 새 세션(빈 history) 시작 시 Moly가 유저 입력을 기다리지 않고
+# 먼저 인사 턴을 연다. 재연결(누적 history)에선 발동 안 함(중복 인사 방지). 끄려면 false.
+GREETING_ENABLED = env("GREETING_ENABLED", "true").lower() in ("1", "true", "yes")
+
 # 남용 방어(연결당). per-IP/전역 연결 cap은 앞단 프록시(ALB/nginx) 영역.
 SESSION_INIT_TIMEOUT_S = float(env("SESSION_INIT_TIMEOUT_S", "10") or "10")  # 미인증 idle 끊기
 MAX_TEXT_LEN = int(env("MAX_TEXT_LEN", "4000") or "4000")                    # text_turn 1건 상한
