@@ -35,6 +35,11 @@ MEMORY_COMMIT_URL = env("MEMORY_COMMIT_URL", f"{_LLM_BASE}/memory/commit")
 # 교정 — '교정 받기' 시 게이트웨이가 호출(브라우저는 moly-llm 직접 접근 불가).
 FEEDBACK_URL = env("FEEDBACK_URL", f"{_LLM_BASE}/feedback")
 
+# 세션시작 메모리 로드 타임아웃(초). mem0 get_all이 콜드 커넥션/스파이크로 5s를 종종 넘겨
+# ReadTimeout으로 메모리를 못 불러오던 문제 → 여유 상향. 로드는 ready 전에 await되므로 너무
+# 키우면 세션 시작이 느려짐(균형 12s). 텔레메트리 off(moly-llm)로 평소 지연은 줄어듦.
+MEMORY_LOAD_TIMEOUT_S = float(env("MEMORY_LOAD_TIMEOUT_S", "12") or "12")
+
 # 데모 고정 user_id(인증 전/토큰 없을 때 폴백). Mem0 장기기억이 이 id로 쌓인다.
 DEMO_USER_ID = env("DEMO_USER_ID", "molly_voice_demo")
 
