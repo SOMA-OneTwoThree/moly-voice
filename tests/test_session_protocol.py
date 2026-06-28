@@ -269,6 +269,41 @@ def run():
     finally:
         main.REQUIRE_AUTH = False
 
+    # ── 18) 닉네임 주입: fetch_nickname 결과가 memory_text 끝에 통제된 블록으로 붙음 ──
+    async def fake_nick(token, user_id):
+        return "철수"
+
+    orig_nick = main.fetch_nickname
+    main.fetch_nickname = fake_nick
+    run_calls.clear()
+    try:
+        with client.websocket_connect("/ws", headers={"Authorization": "Bearer tok-u1"}) as ws:
+            ws.send_json({"type": "session_init", "history": []})
+            ws.receive_json()  # ready
+            ws.send_json({"type": "text_turn", "text": "hi"})
+            _drain_turn(ws)
+        mem = run_calls[-1]["memory"]
+        check("18a 닉네임이 memory_text에 주입", "이름: 철수" in mem)
+        check("18b 기존 memory(mem0)도 유지", mem.startswith("MEM:u1"))
+    finally:
+        main.fetch_nickname = orig_nick
+
+    # ── 19) 닉네임 None(미온보딩/실패) → memory_text 그대로 ──
+    async def fake_nick_none(token, user_id):
+        return None
+
+    main.fetch_nickname = fake_nick_none
+    run_calls.clear()
+    try:
+        with client.websocket_connect("/ws", headers={"Authorization": "Bearer tok-u1"}) as ws:
+            ws.send_json({"type": "session_init", "history": []})
+            ws.receive_json()
+            ws.send_json({"type": "text_turn", "text": "hi"})
+            _drain_turn(ws)
+        check("19 닉네임 없으면 주입 안 함", run_calls[-1]["memory"] == "MEM:u1")
+    finally:
+        main.fetch_nickname = orig_nick
+
     print()
     passed = sum(1 for _, c in results if c)
     print(f"=== {passed}/{len(results)} PASS ===")
