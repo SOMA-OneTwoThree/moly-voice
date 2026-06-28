@@ -127,15 +127,24 @@ def run():
         check("2c commit에 전체 4건", len(commit_calls[0]["messages"]) == 4)
         check("2d commit user_id=u1", commit_calls[0]["user_id"] == "u1")
 
-    # ── 3) 네트워크 끊김: end_session 없이 닫힘 → commit 호출 없어야 ──
+    # ── 3) end_session 없이 끊김 + 대화 있음 → 안전망 커밋(유실 방지) ──
+    # iOS 교정 타임아웃 시 end_session을 생략하고 닫는 경로에서 대화가 통째로 유실되던 문제 →
+    # finally 안전망이 미커밋+대화 있으면 커밋한다.
     load_calls.clear(); commit_calls.clear(); run_calls.clear()
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "session_init", "history": []})
         ws.receive_json()  # ready
         ws.send_json({"type": "text_turn", "text": "mid sentence"})
         _drain_turn(ws)
-        # end_session 안 보내고 컨텍스트 종료 = 소켓만 끊김(네트워크 드롭)
-    check("3a 끊김엔 commit 안 함", len(commit_calls) == 0)
+        # end_session 안 보내고 닫힘(타임아웃·크래시·네트워크) → finally 안전망 커밋
+    check("3a 끊김+대화 있으면 안전망 commit 1회", len(commit_calls) == 1)
+
+    # ── 3b) 대화 없이 끊김(빈 세션) → 커밋 안 함 ──
+    load_calls.clear(); commit_calls.clear()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "session_init", "history": []})
+        ws.receive_json()  # ready (턴 없이 바로 닫음)
+    check("3b 대화 없으면 안전망 commit 안 함", len(commit_calls) == 0)
 
     # ── 4) 재연결: 누적 history로 session_init → 재시드(이어감) ──
     load_calls.clear(); commit_calls.clear(); run_calls.clear()
