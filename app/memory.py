@@ -7,25 +7,36 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
 from .alerts import alert, internal_headers
-from .config import DEMO_USER_ID, MEMORY_COMMIT_URL, MEMORY_LOAD_URL
+from .config import (
+    DEMO_USER_ID,
+    MEMORY_COMMIT_URL,
+    MEMORY_LOAD_TIMEOUT_S,
+    MEMORY_LOAD_URL,
+)
 
 _log = logging.getLogger("moly-voice")
 
 
 async def load_memory(user_id: str = DEMO_USER_ID) -> str:
     """세션시작 장기기억 로드. 실패 시 ""(메모리 없이 진행)."""
+    t0 = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=MEMORY_LOAD_TIMEOUT_S) as client:
             r = await client.post(MEMORY_LOAD_URL, json={"user_id": user_id},
                                   headers=internal_headers())
             r.raise_for_status()
-            return r.json().get("memory_text", "") or ""
+            text = r.json().get("memory_text", "") or ""
+            _log.info("memory load %dms (chars=%d)",
+                      int((time.monotonic() - t0) * 1000), len(text))
+            return text
     except Exception as e:  # noqa: BLE001
-        _log.warning("memory load 실패(메모리 없이 진행): %r", e)
+        _log.warning("memory load 실패 %dms(메모리 없이 진행): %r",
+                     int((time.monotonic() - t0) * 1000), e)
         await alert(repr(e), context="memory load 실패")
         return ""
 
