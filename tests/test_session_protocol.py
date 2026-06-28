@@ -64,11 +64,28 @@ async def fake_run_turn(send_json, send_bytes, messages, transcript,
     await send_json({"type": "turn_end"})
 
 
+greet_calls: list[dict] = []
+
+
+async def fake_run_greeting(send_json, send_bytes, messages,
+                           user_id="molly_voice_demo", memory=""):
+    # 실 run_greeting_turn과 동일: 합성 user는 안 남기고 assistant 인사만 messages에 추가.
+    greet_calls.append({
+        "user_id": user_id, "memory": memory,
+        "history_in": [dict(m) for m in messages],
+    })
+    await send_json({"type": "reply_delta", "text": "hey there"})
+    messages.append({"role": "assistant", "content": "hey there"})
+    await send_json({"type": "turn_end"})
+
+
 main.load_memory = fake_load_memory
 main.commit_memory = fake_commit_memory
 main.request_feedback = fake_request_feedback
 main.run_turn = fake_run_turn
+main.run_greeting_turn = fake_run_greeting
 main.verify_token = fake_verify_token
+main.GREETING_ENABLED = False  # 기존 세션 테스트는 선발화 off(빈 history 시 추가 트래픽 방지)
 
 
 def _drain_turn(ws):
@@ -303,6 +320,32 @@ def run():
         check("19 닉네임 없으면 주입 안 함", run_calls[-1]["memory"] == "MEM:u1")
     finally:
         main.fetch_nickname = orig_nick
+
+    # ── 20) 선발화(GREETING_ENABLED): 새 세션이면 Moly가 먼저 인사, 재연결엔 안 함 ──
+    main.GREETING_ENABLED = True
+    try:
+        # 20a 새 세션(빈 history) → ready 직후 인사 턴(reply_delta+turn_end)
+        greet_calls.clear()
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "session_init", "history": []})
+            check("20a 새 세션→ready", ws.receive_json().get("type") == "ready")
+            check("20b 선발화 reply_delta", ws.receive_json().get("type") == "reply_delta")
+            check("20c 선발화 turn_end", ws.receive_json().get("type") == "turn_end")
+        check("20d 선발화 1회 발동", len(greet_calls) == 1)
+        check("20e 선발화 진입 시 history 비어있음", greet_calls[0]["history_in"] == [])
+
+        # 20f 재연결(누적 history) → 선발화 안 함, 곧장 정상 턴 가능
+        greet_calls.clear()
+        accumulated = [{"role": "user", "content": "a"},
+                       {"role": "assistant", "content": "b"}]
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "session_init", "history": accumulated})
+            check("20f 재연결→ready", ws.receive_json().get("type") == "ready")
+            ws.send_json({"type": "text_turn", "text": "hi again"})
+            _drain_turn(ws)
+        check("20g 재연결엔 선발화 안 함", len(greet_calls) == 0)
+    finally:
+        main.GREETING_ENABLED = False
 
     print()
     passed = sum(1 for _, c in results if c)
