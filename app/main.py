@@ -404,11 +404,16 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 await cancel_turn()
                 await send_json({"type": "status", "state": "idle"})
     finally:
-        # WS 끊김 = 정리만. mem0 커밋은 여기서 하지 않는다 — 네트워크 끊김(의도치 않은 종료)에도
-        # finally가 돌기 때문. 커밋은 명시적 end_session에서만. 끊김이 진짜 종료면 클라가
-        # end_session을 먼저 보낸 뒤 닫으므로 그때 이미 커밋됨. history는 클라가 보관(재시드).
         await cancel_stt()   # 리스닝 중 disconnect 시 orphan stt_task 정리(근본 원인 해소)
         await cancel_turn()
+        # 안전망 커밋: 원래는 명시적 end_session에서만 커밋했으나, 클라가 end_session 없이 닫는
+        # 경로(iOS 교정 응답 타임아웃 시 end_session 생략·앱 크래시·네트워크 끊김)에서 대화가 통째로
+        # 유실됐다. 인증된 세션에 대화가 쌓였고 아직 커밋 전이면 여기서 커밋해 유실을 막는다.
+        # end_session에서 이미 커밋했으면 committed=True라 스킵(멱등). mem0는 해시중복을 스킵하므로
+        # 재연결 후 정식 종료와 내용이 겹쳐도 안전(중복 기억 생성 안 됨).
+        if authed and not committed and messages:
+            committed = True
+            await commit_memory(messages, user_id)  # 내부 fail-safe(실패해도 안 죽고 알림)
         if fb_task and not fb_task.done():  # 교정 미완 상태로 끊김 → orphan httpx 정리
             fb_task.cancel()
             try:
