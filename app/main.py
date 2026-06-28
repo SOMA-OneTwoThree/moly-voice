@@ -78,11 +78,30 @@ async def _pump_stt(dg: STTStream, send_json) -> str:
     return transcript
 
 
+async def _user_from_header(ws: WebSocket) -> str | None:
+    """`Authorization: Bearer <token>` 헤더 검증 → user_id. 없거나 무효면 None.
+
+    네이티브/iOS는 토큰을 이 헤더로 보낸다(계약). 브라우저는 헤더를 못 붙여 session_init 폴백.
+    """
+    parts = (ws.headers.get("authorization") or "").split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return await verify_token(parts[1])
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
+    # 인증: 헤더 토큰을 연결 시 검증해 user_id 확정. REQUIRE_AUTH인데 유효 헤더 토큰이 없으면
+    # accept 전에 핸드셰이크를 거부한다(클라는 연결 실패=인증 오류로 처리). 헤더 없는 웹은
+    # accept 후 session_init.token으로 폴백(REQUIRE_AUTH=false 환경에서만).
+    header_uid = await _user_from_header(ws)
+    if REQUIRE_AUTH and not header_uid:
+        await ws.close(code=1008)  # 미인증 → 핸드셰이크 거부
+        return
     await ws.accept()
-    # 신원·메모리·커밋여부는 session_init에서 확정(인증 전 데모 기본). WS 연결 != 세션 시작.
-    user_id = DEMO_USER_ID       # session_init이 실제 user_id로 교체
+    # 신원: 헤더로 확정됐으면 그 user_id, 아니면 session_init 폴백에서 결정.
+    user_id = header_uid or DEMO_USER_ID
+    auth_via_header = header_uid is not None  # True면 session_init에서 재인증 안 함
     memory_text = ""             # session_init에서 load_memory로 채움(세션 내내 고정)
     committed = False            # end_session(명시 종료) 시에만 True — 네트워크 끊김과 구분
     authed = False               # session_init 성공 전엔 어떤 턴도 처리 안 함(인증 게이트)
@@ -220,22 +239,20 @@ async def ws_endpoint(ws: WebSocket) -> None:
             if t == "session_init":
                 # 연결/재연결 시드 — 클라가 보관한 이번 세션 history로 게이트웨이를 초기화.
                 # 재연결이면 history에 누적분이 옴 → 대화 끊김 없이 이어짐. 빈 배열이면 새 세션.
-                # 인증: 토큰 있으면 검증→user.id(실패 시 거절). 없으면 DEMO 폴백(로컬/데모).
-                # 평문 user_id는 신뢰하지 않는다(스푸핑 방지) — 신원은 토큰에서만 도출.
-                token = (evt.get("token") or "").strip()
-                if token:
-                    uid = await verify_token(token)
-                    if not uid:
-                        await send_json({"type": "auth_error",
-                                         "message": "invalid or expired token"})
-                        break  # 인증 실패 → 연결 종료(finally가 정리, 커밋 없음)
-                    user_id = uid
-                elif REQUIRE_AUTH:
-                    # 프로덕션: 토큰 없는 연결 거절(DEMO 폴백 차단).
-                    await send_json({"type": "auth_error", "message": "token required"})
-                    break
-                else:
-                    user_id = DEMO_USER_ID  # 로컬/데모만
+                # 인증: 헤더로 이미 user_id가 확정됐으면(iOS/네이티브) 재인증하지 않는다 —
+                # iOS는 토큰을 session_init에 싣지 않는다. 헤더 인증이 안 된 경우(브라우저)만
+                # session_init.token 폴백(REQUIRE_AUTH=false 환경에서만 여기 도달). 평문 user_id 불신.
+                if not auth_via_header:
+                    token = (evt.get("token") or "").strip()
+                    if token:
+                        uid = await verify_token(token)
+                        if not uid:
+                            await send_json({"type": "auth_error",
+                                             "message": "invalid or expired token"})
+                            break  # 인증 실패 → 연결 종료
+                        user_id = uid
+                    else:
+                        user_id = DEMO_USER_ID  # 헤더·토큰 둘 다 없음(로컬/데모)
                 # history 크기 제한(A3/A5) — 역할도 user/assistant로만 제한(B5).
                 hist = evt.get("history") or []
                 clean: list[dict] = []
