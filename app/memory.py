@@ -40,11 +40,15 @@ async def commit_memory(messages: list[dict], user_id: str = DEMO_USER_ID) -> No
     if not convo:
         return
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
                 MEMORY_COMMIT_URL, json={"user_id": user_id, "messages": convo},
                 headers=internal_headers(),
             )
+            # 응답 status를 반드시 확인 — moly-llm 커밋(mem0 add) 실패가 조용히 묻히던 버그.
+            # 4xx/5xx면 본문 일부를 담아 알림(원인 추적용).
+            if r.status_code >= 400:
+                raise RuntimeError(f"commit {r.status_code}: {r.text[:300]}")
     except Exception as e:  # noqa: BLE001
         _log.warning("memory commit 실패: %r", e)
         await alert(repr(e), context="memory commit 실패")
