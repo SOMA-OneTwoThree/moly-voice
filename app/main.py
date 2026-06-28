@@ -40,6 +40,7 @@ from .config import (
 from .feedback import request_feedback
 from .gateway.orchestrator import run_turn
 from .memory import commit_memory, load_memory
+from .profile import fetch_nickname
 from .stt.base import STTStream
 from .stt.factory import create_stt_stream
 
@@ -78,15 +79,19 @@ async def _pump_stt(dg: STTStream, send_json) -> str:
     return transcript
 
 
+def _bearer_from_header(ws: WebSocket) -> str:
+    """`Authorization: Bearer <token>` 헤더의 토큰 문자열. 없으면 ""."""
+    parts = (ws.headers.get("authorization") or "").split()
+    return parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else ""
+
+
 async def _user_from_header(ws: WebSocket) -> str | None:
-    """`Authorization: Bearer <token>` 헤더 검증 → user_id. 없거나 무효면 None.
+    """헤더 토큰 검증 → user_id. 없거나 무효면 None.
 
     네이티브/iOS는 토큰을 이 헤더로 보낸다(계약). 브라우저는 헤더를 못 붙여 session_init 폴백.
     """
-    parts = (ws.headers.get("authorization") or "").split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    return await verify_token(parts[1])
+    token = _bearer_from_header(ws)
+    return await verify_token(token) if token else None
 
 
 @app.websocket("/ws")
@@ -271,7 +276,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 messages.clear()
                 messages.extend(clean)
                 committed = False  # 재연결로 새 WS면 이전 커밋여부 리셋(아직 종료 안 함)
-                memory_text = await load_memory(user_id)  # 장기기억 1회 로드(fail-safe→"")
+                # 장기기억(mem0) + 닉네임(profiles)을 동시에 로드(연결 지연 최소화).
+                # 닉네임은 mem0 밖에서 통제된 형태로 memory_text 끝에 주입 → 첫 턴부터 LLM이 이름 앎.
+                prof_token = _bearer_from_header(ws) or (evt.get("token") or "").strip()
+                memory_text, nickname = await asyncio.gather(
+                    load_memory(user_id),                  # fail-safe → ""
+                    fetch_nickname(prof_token, user_id),   # fail-safe → None
+                )
+                if nickname:
+                    memory_text = f"{memory_text}\n\n[사용자 정보]\n이름: {nickname}".strip()
                 authed = True  # 이제부터 턴 처리 허용
                 await send_json({"type": "ready", "provider": STT_PROVIDER})  # 클라 측정 라벨
 
